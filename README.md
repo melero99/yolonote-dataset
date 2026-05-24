@@ -7,7 +7,7 @@
 ![PyQt5](https://img.shields.io/badge/PyQt5-5.15%2B-41CD52?style=flat-square&logo=qt&logoColor=white)
 ![OpenCV](https://img.shields.io/badge/OpenCV-4.x-5C3EE8?style=flat-square&logo=opencv&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey?style=flat-square)
-![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
+![License](https://img.shields.io/badge/License-GLP-green?style=flat-square)
 
 **Herramienta de anotación de imágenes para entrenar modelos YOLO.**  
 Gestiona datasets completos: anota, organiza splits y exporta listos para entrenamiento.
