@@ -50,6 +50,20 @@ import cv2
 
 
 # ══════════════════════════════════════════════════════════════
+#  FUNCIÓN HELPER PARA RECURSOS
+# ══════════════════════════════════════════════════════════════
+
+def resource_path(relative_path):
+    """Obtiene la ruta absoluta del recurso, funciona para dev y PyInstaller"""
+    try:
+        # PyInstaller crea una carpeta temporal y guarda la ruta en _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+
+# ══════════════════════════════════════════════════════════════
 #  ESTILOS GLOBALES
 # ══════════════════════════════════════════════════════════════
 
@@ -507,9 +521,8 @@ class AnnotationCanvas(QWidget):
 class ClassPanel(QWidget):
     class_selected      = pyqtSignal(int)
     class_deselected    = pyqtSignal()
-    # CORRECCIÓN: señales separadas para añadir y borrar
     class_add_requested    = pyqtSignal()
-    class_delete_requested = pyqtSignal(int)   # emite el row a eliminar
+    class_delete_requested = pyqtSignal(int)
     split_assigned      = pyqtSignal(str)
 
     def __init__(self, parent=None):
@@ -557,12 +570,10 @@ class ClassPanel(QWidget):
         row = QHBoxLayout()
         btn_add = QPushButton("＋ Añadir")
         btn_add.setStyleSheet(btn_style("#2a4a2a", "#3a6a3a"))
-        # CORRECCIÓN: emite señal simple, sin abrir diálogo desde aquí
         btn_add.clicked.connect(lambda: self.class_add_requested.emit())
 
         btn_del = QPushButton("✕ Quitar")
         btn_del.setStyleSheet(btn_style("#4a2a2a", "#6a3a3a"))
-        # CORRECCIÓN: emite señal con el row, sin lógica de proyecto aquí
         btn_del.clicked.connect(self._on_delete_clicked)
 
         row.addWidget(btn_add)
@@ -660,7 +671,6 @@ class ClassPanel(QWidget):
     # ── Handlers internos ──────────────────────────────────────
 
     def _on_delete_clicked(self):
-        """CORRECCIÓN: emite el row seleccionado, sin tocar el proyecto."""
         row = self.class_list.currentRow()
         if row >= 0:
             self.class_delete_requested.emit(row)
@@ -676,15 +686,9 @@ class ClassPanel(QWidget):
         self.class_list.clearSelection()
         self.class_deselected.emit()
 
-    # ── Diálogo de nueva clase (solo UI, sin lógica de proyecto) ──
+    # ── Diálogo de nueva clase ──
 
     def open_add_class_dialog(self) -> tuple:
-        """
-        Abre el diálogo para añadir una clase.
-        Retorna (name, QColor) si se confirmó, o (None, None) si se canceló.
-        CORRECCIÓN: ya NO emite ninguna señal interna; la lógica queda
-        en la ventana principal.
-        """
         dialog = QDialog(self)
         dialog.setWindowTitle("Nueva clase")
         dialog.setStyleSheet(f"background:{CARD_BG}; color:{TEXT_PRIMARY};")
@@ -856,6 +860,15 @@ class YoloAnnotatorPro(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("YOLO Annotator Pro")
+        
+        # Configurar icono de la ventana
+        icon_path = resource_path("logoapp.png")
+        if os.path.exists(icon_path):
+            app_icon = QIcon(icon_path)
+            self.setWindowIcon(app_icon)
+            # También establecer el icono de la aplicación
+            QApplication.setWindowIcon(app_icon)
+        
         self.setMinimumSize(1150, 720)
         self._apply_theme()
 
@@ -880,7 +893,6 @@ class YoloAnnotatorPro(QMainWindow):
         self.panel = ClassPanel()
         self.panel.class_selected.connect(self._on_class_selected)
         self.panel.class_deselected.connect(self._on_class_deselected)
-        # CORRECCIÓN: conexiones a los dos métodos separados
         self.panel.class_add_requested.connect(self._handle_add_class)
         self.panel.class_delete_requested.connect(self._handle_delete_class)
         self.panel.split_assigned.connect(self._assign_split)
@@ -1176,12 +1188,6 @@ class YoloAnnotatorPro(QMainWindow):
         self._on_class_selected(idx)
 
     def _handle_add_class(self):
-        """
-        CORRECCIÓN: único punto de entrada para añadir una clase.
-        Abre el diálogo desde la ventana principal y actualiza el proyecto.
-        No hay riesgo de bucle porque la señal class_add_requested
-        no se emite dentro de este método.
-        """
         if not self.project:
             QMessageBox.information(self, "Sin proyecto",
                                     "Crea o abre un proyecto primero.")
@@ -1201,10 +1207,6 @@ class YoloAnnotatorPro(QMainWindow):
             )
 
     def _handle_delete_class(self, row: int):
-        """
-        CORRECCIÓN: único punto de entrada para eliminar una clase.
-        Recibe el row desde la señal del panel y actúa sobre el proyecto.
-        """
         if not self.project or row >= len(self.project.classes):
             return
         cls = self.project.classes[row]
@@ -1964,6 +1966,11 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("YOLO Annotator Pro")
     app.setStyle("Fusion")
+
+    # Configurar icono global de la aplicación
+    icon_path = resource_path("logoapp.png")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
 
     pal = QPalette()
     pal.setColor(QPalette.Window,          QColor(DARK_BG))
