@@ -13,7 +13,8 @@
 **Herramienta de anotación de imágenes para entrenar modelos YOLO.**  
 Gestiona datasets completos: anota, organiza splits y exporta listos para entrenamiento.
 
-![Screenshot placeholder](https://via.placeholder.com/900x500/0d0d1f/4a4aaa?text=YOLO+Annotator+Pro)
+![Screenshot placeholder](https://github.com/melero99/yolonote-dataset/blob/main/image1.png)
+![Screenshot placeholder](https://github.com/melero99/yolonote-dataset/blob/main/image2.png)
 
 </div>
 
