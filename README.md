@@ -162,4 +162,4 @@ Los pull requests son bienvenidos. Para cambios grandes, abre primero un issue p
 
 ## Licencia
 
-[GPL](LICENSE) [COMMERCIAL](LICENSE)
+[GPL](LICENSE) [COMMERCIAL](COMMERCIAL_LICENSE)
