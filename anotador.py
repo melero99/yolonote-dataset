@@ -48,7 +48,8 @@ from PyQt5.QtGui import (
     QFont, QKeySequence, QIcon, QPalette, QWheelEvent, QLinearGradient
 )
 import cv2
-
+from PyQt5.QtWidgets import QTimeEdit
+from PyQt5.QtCore import QTime
 
 # ══════════════════════════════════════════════════════════════
 #  HELPER RECURSOS
@@ -971,6 +972,12 @@ class BalanceDialog(QDialog):
             "Excluir imágenes del split (conservador)",
         ])
         self.strat_combo.setStyleSheet(self._input_style())
+        # Evitar que el combo se aplaste: ajustar a contenido y dar un ancho mínimo razonable
+        try:
+            self.strat_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        except Exception:
+            pass
+        self.strat_combo.setMinimumWidth(220)
         strat_row.addWidget(self.strat_combo, 1)
         cfg_lay.addLayout(strat_row)
         lay.addWidget(grp_cfg)
@@ -2093,7 +2100,8 @@ class FrameExtractorDialog(QDialog):
         super().__init__(parent)
         self.project = project
         self.setWindowTitle("Extractor de Frames")
-        self.setMinimumSize(580, 520)
+        # Aumentar alto mínimo 50px para evitar que controles se compriman
+        self.setMinimumSize(600, 720)
         self.setStyleSheet(f"background:{CARD_BG}; color:{TEXT_PRIMARY};")
         self._last_output_folder = None
         self._running = False
@@ -2138,7 +2146,34 @@ class FrameExtractorDialog(QDialog):
         self.yt_edit.setPlaceholderText("https://www.youtube.com/watch?v=...")
         self.yt_edit.setStyleSheet(self._input_style())
         yt_lay.addWidget(self.yt_edit)
-        yt_note = QLabel("⚠️  Requiere:  pip install yt-dlp")
+
+        # Selección de calidad para descargas de YouTube
+        res_row = QHBoxLayout()
+        res_label = QLabel("Calidad:")
+        res_label.setStyleSheet(f"color:{TEXT_PRIMARY};")
+        self.yt_quality_combo = QComboBox()
+        self.yt_quality_combo.addItems([
+            "Mejor disponible",
+            "1080p",
+            "720p",
+            "480p",
+            "360p",
+            "240p",
+            "144p",
+        ])
+        self.yt_quality_combo.setStyleSheet(self._input_style())
+        # Evitar que se corte el texto en el combobox de calidad
+        try:
+            self.yt_quality_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        except Exception:
+            pass
+        self.yt_quality_combo.setMinimumWidth(140)
+        res_row.addWidget(res_label)
+        res_row.addWidget(self.yt_quality_combo)
+        res_row.addStretch()
+        yt_lay.addLayout(res_row)
+
+        yt_note = QLabel("⚠️  Se necesita ffmpeg para descargar 1080p/720p (streams separados).")
         yt_note.setStyleSheet("color:#aa8800; font-size:10px;")
         yt_lay.addWidget(yt_note)
         self.yt_widget.hide()
@@ -2160,6 +2195,12 @@ class FrameExtractorDialog(QDialog):
         self.fmt_combo = QComboBox()
         self.fmt_combo.addItems(["jpg","png"])
         self.fmt_combo.setStyleSheet(self._input_style())
+        # Mantener un ancho razonable para el combo de formato
+        try:
+            self.fmt_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        except Exception:
+            pass
+        self.fmt_combo.setMinimumWidth(100)
         opt_form.addRow("Formato:", self.fmt_combo)
 
         self.quality_spin = QSpinBox()
@@ -2172,6 +2213,34 @@ class FrameExtractorDialog(QDialog):
         self.minw_spin.setSuffix("  px  (0=sin límite)")
         self.minw_spin.setStyleSheet(self._input_style())
         opt_form.addRow("Ancho mínimo:", self.minw_spin)
+
+        # ── Rango de tiempo ────────────────────────────────────────────────────
+        time_row = QHBoxLayout()
+        lbl_desde = QLabel("Desde:")
+        lbl_desde.setStyleSheet(f"color:{TEXT_PRIMARY}; font-size:12px;")
+        self.time_start = QTimeEdit()
+        self.time_start.setDisplayFormat("mm:ss")
+        self.time_start.setTime(QTime(0, 0, 0))
+        self.time_start.setStyleSheet(self._input_style())
+        self.time_start.setMinimumWidth(90)
+        lbl_hasta = QLabel("Hasta:")
+        lbl_hasta.setStyleSheet(f"color:{TEXT_PRIMARY}; font-size:12px;")
+        self.time_end = QTimeEdit()
+        self.time_end.setDisplayFormat("mm:ss")
+        self.time_end.setTime(QTime(0, 0, 0))
+        self.time_end.setStyleSheet(self._input_style())
+        self.time_end.setMinimumWidth(90)
+        lbl_fin = QLabel("(00:00 = hasta el final)")
+        lbl_fin.setStyleSheet(f"color:{TEXT_MUTED}; font-size:10px;")
+        time_row.addWidget(lbl_desde)
+        time_row.addWidget(self.time_start)
+        time_row.addSpacing(12)
+        time_row.addWidget(lbl_hasta)
+        time_row.addWidget(self.time_end)
+        time_row.addSpacing(6)
+        time_row.addWidget(lbl_fin)
+        time_row.addStretch()
+        opt_form.addRow("Rango:", time_row)
         lay.addWidget(grp_opt)
 
         grp_out = QGroupBox("Carpeta de salida")
@@ -2187,7 +2256,7 @@ class FrameExtractorDialog(QDialog):
         lay.addWidget(grp_out)
 
         self.log = QTextEdit()
-        self.log.setReadOnly(True); self.log.setFixedHeight(110)
+        self.log.setReadOnly(True); self.log.setMinimumHeight(130); self.log.setMaximumHeight(220)
         self.log.setStyleSheet(
             f"background:{DARK_BG}; color:#aaffaa; "
             f"font-family:Consolas,monospace; font-size:11px; border-radius:4px;"
@@ -2244,6 +2313,11 @@ class FrameExtractorDialog(QDialog):
         self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
         QApplication.processEvents()
 
+    def _time_to_seconds(self, te):
+        """Convierte un QTimeEdit en segundos totales. 00:00 → 0 (sin límite)."""
+        t = te.time()
+        return t.minute() * 60 + t.second()
+
     def _start_extraction(self):
         if self._running:
             return
@@ -2267,12 +2341,16 @@ class FrameExtractorDialog(QDialog):
         self.progress.setValue(0)
         self.log.clear()
         base_out = Path(out_folder)
+        t_start_s = self._time_to_seconds(self.time_start)
+        t_end_s   = self._time_to_seconds(self.time_end)  # 0 = hasta el final
         try:
             if is_local:
                 vp = Path(self.local_edit.text().strip())
-                self._extract(vp, vp.stem, base_out)
+                self._extract(vp, vp.stem, base_out, t_start_s, t_end_s)
             else:
-                self._download_and_extract(self.yt_edit.text().strip(), base_out)
+                quality = self.yt_quality_combo.currentText() if hasattr(self, 'yt_quality_combo') else None
+                self._download_and_extract(self.yt_edit.text().strip(), base_out, quality=quality,
+                                           t_start_s=t_start_s, t_end_s=t_end_s)
         except Exception as e:
             self._log(f"❌ Error: {e}")
         finally:
@@ -2294,70 +2372,300 @@ class FrameExtractorDialog(QDialog):
         carpeta.mkdir(parents=True, exist_ok=True)
         return carpeta
 
-    def _download_and_extract(self, url, base_out):
+    def _download_and_extract(self, url, base_out, quality=None, t_start_s=0, t_end_s=0):
         try:
             import yt_dlp
         except ImportError:
-            self._log("❌  yt-dlp no instalado. Ejecuta:  pip install yt-dlp"); return
+            self._log("❌  yt-dlp no está instalado. Ejecuta: pip install yt-dlp"); return
 
-        # Detectar si ffmpeg está disponible en el sistema
-        import shutil as _shutil
-        has_ffmpeg = _shutil.which("ffmpeg") is not None
+        import shutil as _shutil, subprocess as _sp
+        def _detect_ffmpeg():
+            # 1. Búsqueda estándar por PATH
+            if _shutil.which("ffmpeg"):
+                return True
+            # 2. Rutas típicas de instalación en Windows
+            common = [
+                r"C:\ffmpeg\bin\ffmpeg.exe",
+                r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+                r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
+            ]
+            import os
+            for p in common:
+                if os.path.isfile(p):
+                    # Añadir al PATH del proceso para que yt-dlp también lo encuentre
+                    bin_dir = os.path.dirname(p)
+                    os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+                    return True
+            # 3. Intentar ejecutarlo directamente (por si está en PATH pero which falla)
+            try:
+                _sp.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
+                return True
+            except Exception:
+                pass
+            return False
+        has_ffmpeg = _detect_ffmpeg()
+        self._log(f"{'✅' if has_ffmpeg else '❌'}  ffmpeg {'detectado' if has_ffmpeg else 'NO detectado'}")
 
-        temp_dir = base_out/"_temp_yt"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        video_path = None
-        try:
-            self._log("⬇️  Conectando con YouTube…")
-            QApplication.processEvents()
+        # ── Logger que redirige la salida de yt-dlp al QTextEdit ──────────────
+        log_fn = self._log  # captura referencia
 
-            if has_ffmpeg:
-                # ffmpeg disponible: puede mezclar video+audio en la mejor calidad
-                fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-                self._log("ℹ️  ffmpeg detectado — descargando máxima calidad…")
-            else:
-                # Sin ffmpeg: forzar un stream ya mezclado (un solo archivo mp4)
-                # mp4[vcodec^=avc] garantiza H.264 que OpenCV puede abrir sin problemas
+        class QtLogger:
+            def debug(self, msg):
+                # yt-dlp envía el progreso como líneas "[download] X% …"
+                msg = msg.strip()
+                if not msg:
+                    return
+                # Filtrar líneas de debug internas poco útiles
+                if msg.startswith("[debug]"):
+                    return
+                log_fn(msg)
+                QApplication.processEvents()
+
+            def info(self, msg):
+                msg = msg.strip()
+                if msg:
+                    log_fn(msg)
+                    QApplication.processEvents()
+
+            def warning(self, msg):
+                msg = msg.strip()
+                if msg:
+                    log_fn(f"⚠️  {msg}")
+                    QApplication.processEvents()
+
+            def error(self, msg):
+                msg = msg.strip()
+                if msg:
+                    log_fn(f"❌  {msg}")
+                    QApplication.processEvents()
+
+        self._log("⬇️  Conectando con YouTube…")
+        QApplication.processEvents()
+
+        # ── Parsear calidad ────────────────────────────────────────────────────
+        max_h = None
+        if quality and isinstance(quality, str):
+            q = quality.strip().lower().replace(" ", "")
+            if q.endswith("p") and q[:-1].isdigit():
+                try:
+                    max_h = int(q[:-1])
+                except Exception:
+                    max_h = None
+
+        # ── Construir formato yt-dlp ───────────────────────────────────────────
+        # Para extraer frames directamente (sin guardar el vídeo completo)
+        # pedimos SOLO el stream de vídeo. Sin audio → no se necesita ffmpeg
+        # para mezclar. Obtenemos el mejor vídeo disponible en la resolución pedida.
+        if has_ffmpeg:
+            if max_h:
                 fmt = (
-                    "bestvideo[ext=mp4][vcodec^=avc][height<=1080][acodec!=none]"
-                    "/best[ext=mp4][acodec!=none]"
-                    "/best[ext=mp4]"
-                    "/best"
+                    f"bestvideo[height<={max_h}][ext=mp4]"
+                    f"/bestvideo[height<={max_h}]"
+                    f"/best[height<={max_h}]"
+                    f"/best"
                 )
-                self._log("ℹ️  ffmpeg NO detectado — usando stream combinado (sin mezcla)…")
-
-            opts = {
-                "format": fmt,
-                "outtmpl": str(temp_dir/"%(title)s.%(ext)s"),
-                "quiet": True,
-                "no_warnings": True,
-                # Nunca intentar mezclar si no hay ffmpeg
-                "merge_output_format": "mp4" if has_ffmpeg else None,
-                # Abortar si no hay ffmpeg y se requeriría mezcla
-                "abort_on_error": False,
-            }
-            # Limpiar clave None para no pasar parámetros inválidos a yt-dlp
-            opts = {k: v for k, v in opts.items() if v is not None}
-
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.extract_info(url, download=True)
-
-            candidates = (
-                list(temp_dir.glob("*.mp4"))
-                + list(temp_dir.glob("*.mkv"))
-                + list(temp_dir.glob("*.webm"))
+                self._log(f"ℹ️  ffmpeg disponible — stream de vídeo hasta {max_h}p…")
+            else:
+                fmt = "bestvideo[ext=mp4]/bestvideo/best"
+                self._log("ℹ️  ffmpeg disponible — mejor stream de vídeo…")
+        else:
+            # Sin ffmpeg: pedimos el mejor stream progresivo (ya contiene vídeo)
+            # Solo vídeo: bestvideo puede ser un stream DASH sin audio, que cv2 lee bien
+            if max_h and max_h > 480:
+                self._log(
+                    f"⚠️  ffmpeg no detectado. YouTube raramente tiene streams combinados >480p. "
+                    f"Se descargará el mejor disponible (probablemente 480p o menos)."
+                )
+            fmt = (
+                f"bestvideo[height<={max_h}][ext=mp4]/bestvideo[height<={max_h}]/best[height<={max_h}]/best[ext=mp4]/best"
+                if max_h else
+                "bestvideo[ext=mp4]/bestvideo/best[ext=mp4]/best"
             )
-            if not candidates:
-                self._log("❌  No se encontró el archivo descargado."); return
-            video_path = candidates[0]
-            self._log(f"✅  Descargado: {video_path.stem}")
-            self._extract(video_path, video_path.stem, base_out)
-        finally:
-            if video_path and video_path.exists():
-                video_path.unlink()
-            if temp_dir.exists():
-                try: temp_dir.rmdir()
-                except OSError: pass
+            self._log(f"ℹ️  ffmpeg no detectado — stream de vídeo directo…")
+
+        # ── Obtener la URL directa del stream de vídeo ─────────────────────────
+        self._log("🔍  Resolviendo URL del stream…")
+        QApplication.processEvents()
+
+        # Encontrar la ruta exacta de ffmpeg para pasársela a yt-dlp
+        import os as _os
+        ffmpeg_path = _shutil.which("ffmpeg") or ""
+
+        opts_info = {
+            "format": fmt,
+            "quiet": True,
+            "no_warnings": True,
+            "logger": QtLogger(),
+        }
+        if ffmpeg_path:
+            opts_info["ffmpeg_location"] = _os.path.dirname(ffmpeg_path)
+
+        try:
+            with yt_dlp.YoutubeDL(opts_info) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            self._log(f"❌  Error al obtener info: {e}"); return
+
+        if not info:
+            self._log("❌  No se pudo obtener información del vídeo."); return
+
+        titulo = info.get("title", "video")
+        ancho_yt  = info.get("width", "?")
+        alto_yt   = info.get("height", "?")
+
+        # La URL del stream puede estar en 'url' o en 'requested_formats'
+        stream_url = info.get("url")
+        if not stream_url and "requested_formats" in info:
+            # Coger el formato de vídeo (el que tiene vcodec)
+            for f in info["requested_formats"]:
+                if f.get("vcodec", "none") != "none":
+                    stream_url = f.get("url")
+                    ancho_yt   = f.get("width", ancho_yt)
+                    alto_yt    = f.get("height", alto_yt)
+                    break
+
+        if not stream_url:
+            self._log("❌  No se pudo obtener la URL del stream de vídeo."); return
+
+        self._log(f"✅  Stream resuelto: «{titulo}»  {ancho_yt}×{alto_yt}")
+        self._log("📹  Extrayendo frames directamente del stream (sin descargar el vídeo completo)…")
+        QApplication.processEvents()
+
+        # ── Extraer frames directamente desde la URL del stream ────────────────
+        self._extract_from_url(stream_url, titulo, base_out, ffmpeg_path or None, t_start_s, t_end_s)
+
+    def _extract_from_url(self, stream_url, nombre, base_out, ffmpeg_bin=None, t_start_s=0, t_end_s=0):
+        """
+        Extrae frames directamente desde una URL de stream sin guardar el vídeo.
+        t_start_s / t_end_s: rango en segundos (t_end_s=0 → hasta el final).
+        """
+        import subprocess as _sp, shutil as _sh
+        carpeta  = self._crear_carpeta(base_out, nombre)
+        fps_obj  = self.fps_spin.value()
+        fmt      = self.fmt_combo.currentText()
+        quality  = self.quality_spin.value()
+        params   = [cv2.IMWRITE_JPEG_QUALITY, quality] if fmt == "jpg" else []
+
+        rango_str = (
+            f"{t_start_s//60}:{t_start_s%60:02d} → "
+            + (f"{t_end_s//60}:{t_end_s%60:02d}" if t_end_s else "fin")
+        )
+
+        # ── Intentar abrir con cv2 primero ────────────────────────────────────
+        cap = cv2.VideoCapture(stream_url)
+        ancho = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        alto  = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps_v = cap.get(cv2.CAP_PROP_FPS) or 0
+
+        use_ffmpeg_pipe = False
+        if not cap.isOpened() or ancho == 0 or fps_v == 0:
+            cap.release()
+            if ffmpeg_bin:
+                use_ffmpeg_pipe = True
+                self._log("ℹ️  Stream DASH detectado — usando ffmpeg para decodificar…")
+            else:
+                self._log("❌  No se puede abrir el stream y ffmpeg no está disponible."); return
+
+        if use_ffmpeg_pipe:
+            # ── Modo ffmpeg pipe ───────────────────────────────────────────────
+            fp = ffmpeg_bin.replace("ffmpeg.exe", "ffprobe.exe").replace("ffmpeg", "ffprobe")
+            try:
+                probe_cmd = [
+                    fp if (Path(fp).exists() or _sh.which("ffprobe")) else ffmpeg_bin,
+                    "-hide_banner", "-loglevel", "error",
+                    "-print_format", "json", "-show_streams", "-select_streams", "v:0",
+                    "-i", stream_url
+                ]
+                r = _sp.run(probe_cmd, capture_output=True, timeout=30)
+                import json as _json
+                si = _json.loads(r.stdout or "{}").get("streams", [{}])
+                ancho = int(si[0].get("width",  0)) if si else 0
+                alto  = int(si[0].get("height", 0)) if si else 0
+                num, den = (si[0].get("r_frame_rate", "25/1") if si else "25/1").split("/")
+                fps_v = float(num) / float(den) if float(den) else 25.0
+            except Exception:
+                ancho, alto, fps_v = 0, 0, 25.0
+
+            intv = max(1, round(fps_v / fps_obj))
+            self._log(f"    {ancho}×{alto}  |  {fps_v:.1f}fps  |  rango: {rango_str}  |  1 frame cada {intv}")
+            self._log(f"    Destino: {carpeta}")
+            self.progress.setMaximum(0)
+
+            # Construir comando con -ss / -t para el rango de tiempo
+            cmd = [ffmpeg_bin, "-hide_banner", "-loglevel", "error"]
+            if t_start_s > 0:
+                cmd += ["-ss", str(t_start_s)]
+            cmd += ["-i", stream_url]
+            if t_end_s > 0:
+                cmd += ["-t", str(t_end_s - t_start_s)]
+            cmd += ["-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
+
+            proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.PIPE)
+            frame_size = ancho * alto * 3
+            if frame_size == 0:
+                self._log("❌  No se pudieron obtener dimensiones del stream."); proc.kill(); return
+
+            guardados = frame_idx = 0
+            try:
+                while True:
+                    raw = proc.stdout.read(frame_size)
+                    if len(raw) < frame_size:
+                        break
+                    if frame_idx % intv == 0:
+                        import numpy as _np
+                        frame = _np.frombuffer(raw, dtype=_np.uint8).reshape((alto, ancho, 3))
+                        dest = carpeta / f"frame_{frame_idx:07d}.{fmt}"
+                        self._imwrite_unicode(dest, frame, params)
+                        guardados += 1
+                        if guardados % 30 == 0:
+                            self._log(f"    {guardados} frames guardados…")
+                            QApplication.processEvents()
+                    frame_idx += 1
+            finally:
+                proc.stdout.close()
+                proc.wait()
+
+        else:
+            # ── Modo cv2 directo con seek ──────────────────────────────────────
+            total       = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            intv        = max(1, round(fps_v / fps_obj))
+            start_frame = int(t_start_s * fps_v)
+            end_frame   = int(t_end_s   * fps_v) if t_end_s > 0 else (total if total > 0 else 0)
+
+            if start_frame > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+            dur_rango = (end_frame - start_frame) / fps_v if (fps_v and end_frame > start_frame) else 0
+            self._log(f"    {ancho}×{alto}  |  {fps_v:.1f}fps  |  rango: {rango_str}  (~{dur_rango/60:.1f}min)")
+            self._log(f"    Destino: {carpeta}")
+            rango_frames = max(end_frame - start_frame, 1) if end_frame > 0 else max(total - start_frame, 1)
+            self.progress.setMaximum(rango_frames)
+
+            guardados = 0
+            frame_idx = start_frame
+            while True:
+                if end_frame > 0 and frame_idx >= end_frame:
+                    break
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if (frame_idx - start_frame) % intv == 0:
+                    dest = carpeta / f"frame_{frame_idx:07d}.{fmt}"
+                    self._imwrite_unicode(dest, frame, params)
+                    guardados += 1
+                    if guardados % 30 == 0:
+                        pct = (frame_idx - start_frame) / rango_frames * 100
+                        self._log(f"    [{pct:5.1f}%]  {guardados} frames guardados…")
+                        self.progress.setValue(frame_idx - start_frame)
+                        QApplication.processEvents()
+                frame_idx += 1
+            cap.release()
+            self.progress.setValue(rango_frames)
+
+        self._log(f"\n✅  Completado: {guardados} frames en '{carpeta.name}/'")
+        self._last_output_folder = carpeta
+        if self.project is not None:
+            self.btn_add.setEnabled(True)
 
     def _imwrite_unicode(self, filepath, frame, params):
         """cv2.imwrite falla silenciosamente con rutas Unicode en Windows.
@@ -2383,7 +2691,7 @@ class FrameExtractorDialog(QDialog):
         _shutil.copy2(video_path, tmp.name)
         return cv2.VideoCapture(tmp.name), tmp.name
 
-    def _extract(self, video_path, nombre, base_out):
+    def _extract(self, video_path, nombre, base_out, t_start_s=0, t_end_s=0):
         carpeta = self._crear_carpeta(base_out, nombre)
         fps_obj = self.fps_spin.value()
         fmt     = self.fmt_combo.currentText()
@@ -2399,34 +2707,50 @@ class FrameExtractorDialog(QDialog):
 
         fps_v  = cap.get(cv2.CAP_PROP_FPS) or 25
         total  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        dur    = total/fps_v
-        intv   = max(1, round(fps_v/fps_obj))
         ancho  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         alto   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        intv   = max(1, round(fps_v/fps_obj))
+
+        start_frame = int(t_start_s * fps_v)
+        end_frame   = int(t_end_s   * fps_v) if t_end_s > 0 else total
+
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        rango_str = (
+            f"{t_start_s//60}:{t_start_s%60:02d} → "
+            + (f"{t_end_s//60}:{t_end_s%60:02d}" if t_end_s else "fin")
+        )
+        dur_rango = (end_frame - start_frame) / fps_v if fps_v else 0
+        rango_frames = max(end_frame - start_frame, 1)
 
         self._log(f"📹  {video_path.name}")
-        self._log(f"    {ancho}×{alto}  |  {fps_v:.1f}fps  |  {dur/60:.1f}min  →  ~{int(dur*fps_obj)} frames")
+        self._log(f"    {ancho}×{alto}  |  {fps_v:.1f}fps  |  rango: {rango_str}  (~{dur_rango/60:.1f}min)  →  ~{int(dur_rango*fps_obj)} frames")
         self._log(f"    Destino: {carpeta}")
 
-        guardados = frame_idx = 0
-        self.progress.setMaximum(max(total, 1))
+        guardados = 0
+        frame_idx = start_frame
+        self.progress.setMaximum(rango_frames)
 
         while True:
+            if frame_idx >= end_frame:
+                break
             ret, frame = cap.read()
             if not ret: break
-            if frame_idx % intv == 0:
+            if (frame_idx - start_frame) % intv == 0:
                 dest = carpeta / f"frame_{frame_idx:07d}.{fmt}"
                 self._imwrite_unicode(dest, frame, params)
                 guardados += 1
                 if guardados % 50 == 0:
-                    self.progress.setValue(frame_idx)
-                    self._log(f"    [{frame_idx/max(total,1)*100:5.1f}%]  {guardados} frames…")
+                    pct = (frame_idx - start_frame) / rango_frames * 100
+                    self.progress.setValue(frame_idx - start_frame)
+                    self._log(f"    [{pct:5.1f}%]  {guardados} frames…")
             frame_idx += 1
 
         cap.release()
         if tmp_path:
             Path(tmp_path).unlink(missing_ok=True)
-        self.progress.setValue(total)
+        self.progress.setValue(rango_frames)
         self._log(f"\n✅  Completado: {guardados} frames en '{carpeta.name}/'")
         self._last_output_folder = carpeta
         if self.project is not None:
