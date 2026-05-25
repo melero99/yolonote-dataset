@@ -1,0 +1,136 @@
+COMMERCIAL LICENSE AGREEMENT
+
+Copyright (c) 2026. All rights reserved.
+
+This Commercial License Agreement ("Agreement") governs the use of the software
+and associated documentation files (the "Software") for commercial purposes.
+
+────────────────────────────────────────────────────────────────────────────────
+1. DEFINITIONS
+────────────────────────────────────────────────────────────────────────────────
+
+"Commercial Use" means any use of the Software intended for or directed toward
+commercial advantage or monetary compensation, including but not limited to use
+in a commercial product, SaaS platform, internal business tooling, or any
+revenue-generating activity.
+
+"Licensee" means any individual or legal entity that obtains a commercial
+license from the Licensor.
+
+"Licensor" means the copyright holder(s) of the Software.
+
+────────────────────────────────────────────────────────────────────────────────
+2. GRANT OF LICENSE
+────────────────────────────────────────────────────────────────────────────────
+
+Subject to the terms and conditions of this Agreement and upon payment of the
+applicable license fee, Licensor hereby grants Licensee a non-exclusive,
+non-transferable, worldwide license to:
+
+  a) Use, copy, and modify the Software for Commercial Use;
+  b) Distribute the Software as part of Licensee's product or service,
+     provided that the Software is not sold as a standalone product;
+  c) Create derivative works based on the Software.
+
+────────────────────────────────────────────────────────────────────────────────
+3. RESTRICTIONS
+────────────────────────────────────────────────────────────────────────────────
+
+Licensee shall NOT:
+
+  a) Sublicense, sell, resell, transfer, or otherwise make the Software
+     available to any third party as a standalone product;
+  b) Remove or alter any proprietary notices, labels, or marks on the Software;
+  c) Use the Software to develop a competing product or service;
+  d) Reverse engineer, decompile, or disassemble the Software, except to the
+     extent permitted by applicable law;
+  e) Use the Software in any manner that violates applicable laws or regulations.
+
+────────────────────────────────────────────────────────────────────────────────
+4. INTELLECTUAL PROPERTY
+────────────────────────────────────────────────────────────────────────────────
+
+The Software and all copies thereof are proprietary to Licensor and title
+thereto remains in Licensor. Licensor retains all intellectual property rights
+in and to the Software. This Agreement does not grant Licensee any rights to
+trademarks, service marks, or trade names of Licensor.
+
+────────────────────────────────────────────────────────────────────────────────
+5. NOTIFICATION REQUIREMENT
+────────────────────────────────────────────────────────────────────────────────
+
+Prior to any Commercial Use of the Software, Licensee must notify Licensor in
+writing. Such notification shall include:
+
+  a) The name and contact details of the Licensee (individual or entity);
+  b) A brief description of the intended use of the Software;
+  c) The expected start date of Commercial Use;
+  d) The product or service in which the Software will be incorporated.
+
+Notification must be sent to the contact address provided in Section 11 and
+must be acknowledged in writing by Licensor before Commercial Use begins.
+Failure to provide prior notification constitutes a material breach of this
+Agreement and may result in immediate termination of any rights granted herein.
+
+────────────────────────────────────────────────────────────────────────────────
+6. FEES AND PAYMENT
+────────────────────────────────────────────────────────────────────────────────
+
+Commercial Use of the Software requires a valid commercial license. To obtain a
+commercial license, please contact the Licensor at the address provided below.
+License fees are non-refundable unless otherwise agreed in writing.
+
+────────────────────────────────────────────────────────────────────────────────
+6. WARRANTY DISCLAIMER
+────────────────────────────────────────────────────────────────────────────────
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+────────────────────────────────────────────────────────────────────────────────
+7. LIMITATION OF LIABILITY
+────────────────────────────────────────────────────────────────────────────────
+
+IN NO EVENT SHALL LICENSOR BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL,
+EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT, ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+────────────────────────────────────────────────────────────────────────────────
+8. TERMINATION
+────────────────────────────────────────────────────────────────────────────────
+
+This Agreement is effective until terminated. Licensor may terminate this
+Agreement immediately upon written notice if Licensee breaches any term of this
+Agreement. Upon termination, Licensee must destroy all copies of the Software
+in its possession. Sections 4, 7, 8, and 10 shall survive termination.
+
+────────────────────────────────────────────────────────────────────────────────
+10. GOVERNING LAW
+────────────────────────────────────────────────────────────────────────────────
+
+This Agreement shall be governed by and construed in accordance with the laws
+of the jurisdiction in which the Licensor is located, without regard to its
+conflict of law provisions.
+
+────────────────────────────────────────────────────────────────────────────────
+11. CONTACT
+────────────────────────────────────────────────────────────────────────────────
+
+To obtain a commercial license or for any inquiries regarding this Agreement,
+please contact:
+
+  [YOUR NAME / COMPANY NAME]
+  [YOUR EMAIL ADDRESS]
+  [YOUR WEBSITE / GITHUB URL]
+
+────────────────────────────────────────────────────────────────────────────────
+
+For open-source / non-commercial use, please refer to the LICENSE file included
+in this repository.
