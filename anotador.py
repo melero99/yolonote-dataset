@@ -2300,20 +2300,53 @@ class FrameExtractorDialog(QDialog):
         except ImportError:
             self._log("❌  yt-dlp no instalado. Ejecuta:  pip install yt-dlp"); return
 
+        # Detectar si ffmpeg está disponible en el sistema
+        import shutil as _shutil
+        has_ffmpeg = _shutil.which("ffmpeg") is not None
+
         temp_dir = base_out/"_temp_yt"
         temp_dir.mkdir(parents=True, exist_ok=True)
         video_path = None
         try:
             self._log("⬇️  Conectando con YouTube…")
             QApplication.processEvents()
+
+            if has_ffmpeg:
+                # ffmpeg disponible: puede mezclar video+audio en la mejor calidad
+                fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+                self._log("ℹ️  ffmpeg detectado — descargando máxima calidad…")
+            else:
+                # Sin ffmpeg: forzar un stream ya mezclado (un solo archivo mp4)
+                # mp4[vcodec^=avc] garantiza H.264 que OpenCV puede abrir sin problemas
+                fmt = (
+                    "bestvideo[ext=mp4][vcodec^=avc][height<=1080][acodec!=none]"
+                    "/best[ext=mp4][acodec!=none]"
+                    "/best[ext=mp4]"
+                    "/best"
+                )
+                self._log("ℹ️  ffmpeg NO detectado — usando stream combinado (sin mezcla)…")
+
             opts = {
-                "format":"bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "outtmpl":str(temp_dir/"%(title)s.%(ext)s"),
-                "quiet":True,"no_warnings":True,
+                "format": fmt,
+                "outtmpl": str(temp_dir/"%(title)s.%(ext)s"),
+                "quiet": True,
+                "no_warnings": True,
+                # Nunca intentar mezclar si no hay ffmpeg
+                "merge_output_format": "mp4" if has_ffmpeg else None,
+                # Abortar si no hay ffmpeg y se requeriría mezcla
+                "abort_on_error": False,
             }
+            # Limpiar clave None para no pasar parámetros inválidos a yt-dlp
+            opts = {k: v for k, v in opts.items() if v is not None}
+
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.extract_info(url, download=True)
-            candidates = list(temp_dir.glob("*.mp4"))+list(temp_dir.glob("*.mkv"))+list(temp_dir.glob("*.webm"))
+
+            candidates = (
+                list(temp_dir.glob("*.mp4"))
+                + list(temp_dir.glob("*.mkv"))
+                + list(temp_dir.glob("*.webm"))
+            )
             if not candidates:
                 self._log("❌  No se encontró el archivo descargado."); return
             video_path = candidates[0]
@@ -2326,6 +2359,30 @@ class FrameExtractorDialog(QDialog):
                 try: temp_dir.rmdir()
                 except OSError: pass
 
+    def _imwrite_unicode(self, filepath, frame, params):
+        """cv2.imwrite falla silenciosamente con rutas Unicode en Windows.
+        Usamos cv2.imencode + escritura binaria con Python para evitarlo."""
+        ext = Path(filepath).suffix.lower()
+        ok, buf = cv2.imencode(ext, frame, params)
+        if ok:
+            Path(filepath).write_bytes(buf.tobytes())
+
+    def _cap_open_unicode(self, video_path):
+        """cv2.VideoCapture falla con rutas Unicode en Windows.
+        Si la ruta no es ASCII pura, copia el video a un temporal ASCII."""
+        import tempfile, shutil as _shutil
+        path_str = str(video_path)
+        try:
+            path_str.encode("ascii")
+            return cv2.VideoCapture(path_str), None
+        except UnicodeEncodeError:
+            pass
+        suffix = Path(video_path).suffix
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        tmp.close()
+        _shutil.copy2(video_path, tmp.name)
+        return cv2.VideoCapture(tmp.name), tmp.name
+
     def _extract(self, video_path, nombre, base_out):
         carpeta = self._crear_carpeta(base_out, nombre)
         fps_obj = self.fps_spin.value()
@@ -2334,8 +2391,10 @@ class FrameExtractorDialog(QDialog):
         min_w   = self.minw_spin.value()
         params  = [cv2.IMWRITE_JPEG_QUALITY, quality] if fmt=="jpg" else []
 
-        cap = cv2.VideoCapture(str(video_path))
+        cap, tmp_path = self._cap_open_unicode(video_path)
         if not cap.isOpened():
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
             self._log(f"❌  No se puede abrir: {video_path}"); return
 
         fps_v  = cap.get(cv2.CAP_PROP_FPS) or 25
@@ -2356,7 +2415,8 @@ class FrameExtractorDialog(QDialog):
             ret, frame = cap.read()
             if not ret: break
             if frame_idx % intv == 0:
-                cv2.imwrite(str(carpeta/f"frame_{frame_idx:07d}.{fmt}"), frame, params)
+                dest = carpeta / f"frame_{frame_idx:07d}.{fmt}"
+                self._imwrite_unicode(dest, frame, params)
                 guardados += 1
                 if guardados % 50 == 0:
                     self.progress.setValue(frame_idx)
@@ -2364,6 +2424,8 @@ class FrameExtractorDialog(QDialog):
             frame_idx += 1
 
         cap.release()
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
         self.progress.setValue(total)
         self._log(f"\n✅  Completado: {guardados} frames en '{carpeta.name}/'")
         self._last_output_folder = carpeta
