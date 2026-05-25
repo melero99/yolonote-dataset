@@ -24,39 +24,38 @@ Atajos:
     Ctrl+Z         Deshacer última caja
     Doble clic     Eliminar caja bajo el cursor
     Rueda ratón    Zoom in / out
+    Ctrl+B         Abrir Balance de Dataset
 """
 
-import sys, os, json, shutil
+import sys, os, json, shutil, random, math
 from pathlib import Path
-from dataclasses import dataclass, field, asdict
-from typing import List, Optional, Tuple, Dict
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QFileDialog, QFrame, QInputDialog,
-    QColorDialog, QMessageBox, QSizePolicy, QStatusBar,
-    QAction, QMenuBar, QShortcut, QDialog, QDialogButtonBox,
-    QLineEdit, QFormLayout, QListWidget, QListWidgetItem,
-    QProgressDialog, QSpinBox, QDoubleSpinBox, QGroupBox,
-    QRadioButton, QButtonGroup, QScrollArea, QSplitter,
-    QComboBox, QCheckBox, QTabWidget, QTextEdit
+    QPushButton, QLabel, QFileDialog, QInputDialog,
+    QColorDialog, QMessageBox, QSizePolicy, QAction, QShortcut,
+    QDialog, QDialogButtonBox, QLineEdit, QFormLayout,
+    QListWidget, QListWidgetItem, QProgressDialog, QSpinBox,
+    QDoubleSpinBox, QGroupBox, QRadioButton, QScrollArea,
+    QComboBox, QCheckBox, QTextEdit, QProgressBar, QFrame,
+    QScrollBar, QSplitter, QTabWidget
 )
-from PyQt5.QtCore import Qt, QRect, QPoint, QSize, pyqtSignal, QRectF, QPointF
+from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRectF, QPointF, QTimer
 from PyQt5.QtGui import (
     QPainter, QPen, QBrush, QColor, QPixmap, QImage, QCursor,
-    QFont, QKeySequence, QIcon, QPalette, QTransform, QWheelEvent
+    QFont, QKeySequence, QIcon, QPalette, QWheelEvent, QLinearGradient
 )
 import cv2
 
 
 # ══════════════════════════════════════════════════════════════
-#  FUNCIÓN HELPER PARA RECURSOS
+#  HELPER RECURSOS
 # ══════════════════════════════════════════════════════════════
 
 def resource_path(relative_path):
-    """Obtiene la ruta absoluta del recurso, funciona para dev y PyInstaller"""
     try:
-        # PyInstaller crea una carpeta temporal y guarda la ruta en _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
@@ -87,6 +86,10 @@ SPLIT_TEXT = {
     "test":  "TEST",
     None:    "—",
 }
+
+# Umbrales de desequilibrio
+IMBALANCE_WARN  = 0.30   # diferencia > 30%  → advertencia amarilla
+IMBALANCE_CRIT  = 0.60   # diferencia > 60%  → crítico rojo
 
 def btn_style(bg="#2a2a5a", hover="#3a3a7a", border=BORDER_COLOR):
     return f"""
@@ -240,6 +243,25 @@ class Project:
         annotated  = sum(1 for i in self.images if i.boxes)
         return dict(total=total, annotated=annotated, unassigned=unassigned, **splits)
 
+    def class_counts(self) -> Dict[int, int]:
+        """Devuelve {class_id: total_boxes} en todo el proyecto."""
+        counts: Dict[int, int] = {}
+        for rec in self.images:
+            for b in rec.boxes:
+                counts[b.class_id] = counts.get(b.class_id, 0) + 1
+        return counts
+
+    def imbalance_ratio(self) -> float:
+        """
+        0.0 = perfectamente balanceado
+        1.0 = una clase tiene todos los ejemplos
+        """
+        counts = self.class_counts()
+        if len(counts) < 2:
+            return 0.0
+        vals = list(counts.values())
+        return (max(vals) - min(vals)) / max(vals)
+
 
 # ══════════════════════════════════════════════════════════════
 #  CANVAS DE ANOTACIÓN (con zoom)
@@ -260,23 +282,18 @@ class AnnotationCanvas(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.WheelFocus)
 
-        self._pixmap: Optional[QPixmap] = None
+        self._pixmap = None
         self._img_w = self._img_h = 0
-
         self._boxes: List[BoundingBox] = []
         self._classes: List[YoloClass] = []
         self._selected_class_id: Optional[int] = None
-
         self._drawing = False
         self._draw_start: Optional[QPointF] = None
         self._draw_end:   Optional[QPointF] = None
-
         self._zoom   = 1.0
         self._offset = QPointF(0, 0)
         self._pan_active = False
         self._pan_last:  Optional[QPoint] = None
-
-    # ── API pública ────────────────────────────────────────────
 
     def load_image(self, path: str) -> bool:
         img = cv2.imread(path)
@@ -292,17 +309,17 @@ class AnnotationCanvas(QWidget):
         self.update()
         return True
 
-    def set_boxes(self, boxes: List[BoundingBox]):
+    def set_boxes(self, boxes):
         self._boxes = list(boxes)
         self.update()
 
-    def get_boxes(self) -> List[BoundingBox]:
+    def get_boxes(self):
         return list(self._boxes)
 
-    def set_classes(self, classes: List[YoloClass]):
+    def set_classes(self, classes):
         self._classes = classes
 
-    def set_selected_class(self, class_id: Optional[int]):
+    def set_selected_class(self, class_id):
         self._selected_class_id = class_id
         self.setCursor(Qt.CrossCursor if class_id is not None else Qt.ArrowCursor)
 
@@ -315,8 +332,6 @@ class AnnotationCanvas(QWidget):
         self._boxes.clear()
         self.update()
 
-    # ── Zoom & layout ──────────────────────────────────────────
-
     def _fit_to_window(self):
         if self._pixmap is None:
             return
@@ -328,33 +343,25 @@ class AnnotationCanvas(QWidget):
         if self._pixmap is None:
             return
         cw, ch = self.width(), self.height()
-        iw = self._img_w * self._zoom
-        ih = self._img_h * self._zoom
-        self._offset = QPointF((cw - iw) / 2, (ch - ih) / 2)
+        self._offset = QPointF((cw - self._img_w*self._zoom)/2,
+                               (ch - self._img_h*self._zoom)/2)
 
     def _canvas_to_img(self, pt: QPointF) -> QPointF:
-        x = (pt.x() - self._offset.x()) / self._zoom
-        y = (pt.y() - self._offset.y()) / self._zoom
-        x = max(0.0, min(x, float(self._img_w)))
-        y = max(0.0, min(y, float(self._img_h)))
+        x = max(0.0, min((pt.x()-self._offset.x())/self._zoom, float(self._img_w)))
+        y = max(0.0, min((pt.y()-self._offset.y())/self._zoom, float(self._img_h)))
         return QPointF(x, y)
 
-    def _img_to_canvas(self, x: float, y: float) -> QPointF:
-        return QPointF(x * self._zoom + self._offset.x(),
-                       y * self._zoom + self._offset.y())
-
-    # ── Eventos ────────────────────────────────────────────────
+    def _img_to_canvas(self, x, y) -> QPointF:
+        return QPointF(x*self._zoom+self._offset.x(), y*self._zoom+self._offset.y())
 
     def wheelEvent(self, event: QWheelEvent):
         if self._pixmap is None:
             return
-        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        mouse_pos = QPointF(event.pos())
-        self._offset = QPointF(
-            mouse_pos.x() - (mouse_pos.x() - self._offset.x()) * factor,
-            mouse_pos.y() - (mouse_pos.y() - self._offset.y()) * factor,
-        )
-        self._zoom = max(0.1, min(self._zoom * factor, 20.0))
+        factor = 1.15 if event.angleDelta().y() > 0 else 1/1.15
+        mp = QPointF(event.pos())
+        self._offset = QPointF(mp.x()-(mp.x()-self._offset.x())*factor,
+                               mp.y()-(mp.y()-self._offset.y())*factor)
+        self._zoom = max(0.1, min(self._zoom*factor, 20.0))
         self.update()
         self.status_update.emit(f"Zoom: {self._zoom*100:.0f}%")
 
@@ -365,34 +372,32 @@ class AnnotationCanvas(QWidget):
             self._pan_active = True
             self._pan_last = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
-        elif event.button() == Qt.LeftButton:
-            if self._selected_class_id is not None:
-                self._drawing    = True
-                self._draw_start = QPointF(event.pos())
-                self._draw_end   = QPointF(event.pos())
+        elif event.button() == Qt.LeftButton and self._selected_class_id is not None:
+            self._drawing = True
+            self._draw_start = QPointF(event.pos())
+            self._draw_end   = QPointF(event.pos())
 
     def mouseMoveEvent(self, event):
         if self._pan_active and self._pan_last:
-            dx = event.pos().x() - self._pan_last.x()
-            dy = event.pos().y() - self._pan_last.y()
+            dx = event.pos().x()-self._pan_last.x()
+            dy = event.pos().y()-self._pan_last.y()
             self._offset += QPointF(dx, dy)
             self._pan_last = event.pos()
             self.update()
         elif self._drawing:
             self._draw_end = QPointF(event.pos())
             self.update()
-
         if self._pixmap:
             ip = self._canvas_to_img(QPointF(event.pos()))
             self.status_update.emit(
-                f"x:{int(ip.x())}  y:{int(ip.y())}  |  imagen:{self._img_w}×{self._img_h}  |  zoom:{self._zoom*100:.0f}%"
+                f"x:{int(ip.x())}  y:{int(ip.y())}  |  "
+                f"imagen:{self._img_w}×{self._img_h}  |  zoom:{self._zoom*100:.0f}%"
             )
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MiddleButton:
             self._pan_active = False
-            cursor = Qt.CrossCursor if self._selected_class_id is not None else Qt.ArrowCursor
-            self.setCursor(cursor)
+            self.setCursor(Qt.CrossCursor if self._selected_class_id is not None else Qt.ArrowCursor)
         elif event.button() == Qt.LeftButton and self._drawing:
             self._drawing = False
             if self._draw_start and self._draw_end and self._selected_class_id is not None:
@@ -400,10 +405,8 @@ class AnnotationCanvas(QWidget):
                 p2 = self._canvas_to_img(self._draw_end)
                 box = BoundingBox(
                     class_id=self._selected_class_id,
-                    x1=int(min(p1.x(), p2.x())),
-                    y1=int(min(p1.y(), p2.y())),
-                    x2=int(max(p1.x(), p2.x())),
-                    y2=int(max(p1.y(), p2.y())),
+                    x1=int(min(p1.x(), p2.x())), y1=int(min(p1.y(), p2.y())),
+                    x2=int(max(p1.x(), p2.x())), y2=int(max(p1.y(), p2.y())),
                 )
                 if box.is_valid():
                     self._boxes.append(box)
@@ -428,19 +431,14 @@ class AnnotationCanvas(QWidget):
         elif event.key() == Qt.Key_Minus:
             self._zoom_step(1/1.2)
         elif event.key() == Qt.Key_0:
-            self._fit_to_window()
-            self.update()
+            self._fit_to_window(); self.update()
 
     def _zoom_step(self, factor):
         cx, cy = self.width()/2, self.height()/2
-        self._offset = QPointF(
-            cx - (cx - self._offset.x()) * factor,
-            cy - (cy - self._offset.y()) * factor,
-        )
-        self._zoom = max(0.1, min(self._zoom * factor, 20.0))
+        self._offset = QPointF(cx-(cx-self._offset.x())*factor,
+                               cy-(cy-self._offset.y())*factor)
+        self._zoom = max(0.1, min(self._zoom*factor, 20.0))
         self.update()
-
-    # ── Pintado ────────────────────────────────────────────────
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -450,20 +448,15 @@ class AnnotationCanvas(QWidget):
         if self._pixmap is None:
             p.setPen(QColor("#555577"))
             p.setFont(QFont("Arial", 15))
-            p.drawText(self.rect(), Qt.AlignCenter,
-                       "📂  Abre o crea un proyecto para empezar")
-            p.end()
-            return
+            p.drawText(self.rect(), Qt.AlignCenter, "📂  Abre o crea un proyecto para empezar")
+            p.end(); return
 
-        iw = int(self._img_w * self._zoom)
-        ih = int(self._img_h * self._zoom)
-        ox, oy = int(self._offset.x()), int(self._offset.y())
+        iw, ih = int(self._img_w*self._zoom), int(self._img_h*self._zoom)
         scaled = self._pixmap.scaled(iw, ih, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        p.drawPixmap(ox, oy, scaled)
+        p.drawPixmap(int(self._offset.x()), int(self._offset.y()), scaled)
 
         for box in self._boxes:
-            cls = self._get_class(box.class_id)
-            self._draw_box(p, box, cls)
+            self._draw_box(p, box, self._get_class(box.class_id))
 
         if self._drawing and self._draw_start and self._draw_end and self._selected_class_id is not None:
             cls = self._get_class(self._selected_class_id)
@@ -472,31 +465,26 @@ class AnnotationCanvas(QWidget):
             y1 = min(self._draw_start.y(), self._draw_end.y())
             x2 = max(self._draw_start.x(), self._draw_end.x())
             y2 = max(self._draw_start.y(), self._draw_end.y())
-            pen = QPen(color, 2, Qt.DashLine)
-            p.setPen(pen)
+            p.setPen(QPen(color, 2, Qt.DashLine))
             fill = QColor(color); fill.setAlpha(35)
             p.setBrush(QBrush(fill))
             p.drawRect(QRectF(x1, y1, x2-x1, y2-y1))
-
         p.end()
 
-    def _draw_box(self, p: QPainter, box: BoundingBox, cls: Optional[YoloClass]):
+    def _draw_box(self, p, box, cls):
         color = cls.color if cls else QColor("#ff0000")
         name  = cls.name  if cls else f"#{box.class_id}"
-
         c1 = self._img_to_canvas(box.x1, box.y1)
         c2 = self._img_to_canvas(box.x2, box.y2)
         rect = QRectF(c1, c2)
-
         fill = QColor(color); fill.setAlpha(40)
         p.setBrush(QBrush(fill))
         p.setPen(QPen(color, 2))
         p.drawRect(rect)
-
-        fm   = p.fontMetrics()
-        tw   = fm.horizontalAdvance(name) + 10
-        th   = fm.height() + 5
-        tag  = QRectF(c1.x(), c1.y() - th, tw, th)
+        fm = p.fontMetrics()
+        tw = fm.horizontalAdvance(name)+10
+        th = fm.height()+5
+        tag = QRectF(c1.x(), c1.y()-th, tw, th)
         if tag.top() < 0:
             tag.moveTop(c1.y())
         p.fillRect(tag, color)
@@ -504,7 +492,7 @@ class AnnotationCanvas(QWidget):
         p.setFont(QFont("Consolas", 9, QFont.Bold))
         p.drawText(tag, Qt.AlignCenter, name)
 
-    def _get_class(self, cid: int) -> Optional[YoloClass]:
+    def _get_class(self, cid):
         return next((c for c in self._classes if c.id == cid), None)
 
     def resizeEvent(self, event):
@@ -515,19 +503,72 @@ class AnnotationCanvas(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════
-#  PANEL DE CLASES
+#  WIDGET: BARRA DE BALANCE DE UNA CLASE
 # ══════════════════════════════════════════════════════════════
 
-class ClassPanel(QWidget):
-    class_selected      = pyqtSignal(int)
-    class_deselected    = pyqtSignal()
-    class_add_requested    = pyqtSignal()
-    class_delete_requested = pyqtSignal(int)
-    split_assigned      = pyqtSignal(str)
+class ClassBalanceBar(QWidget):
+    """Barra visual coloreada según el nivel de balance de una clase."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(230)
+        self.setFixedHeight(18)
+        self._ratio = 0.0      # 0..1 porcentaje real de esta clase
+        self._target = 0.0     # 0..1 porcentaje objetivo
+        self._color = QColor("#4a4aaa")
+
+    def set_data(self, ratio: float, target: float, color: QColor):
+        self._ratio  = max(0.0, min(1.0, ratio))
+        self._target = max(0.0, min(1.0, target))
+        self._color  = color
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+
+        # Fondo
+        p.setBrush(QBrush(QColor(DARK_BG)))
+        p.setPen(QPen(QColor(BORDER_COLOR)))
+        p.drawRoundedRect(0, 0, w-1, h-1, 4, 4)
+
+        if self._ratio > 0:
+            bar_w = int((w-2) * self._ratio)
+            # Color según desviación respecto al target
+            dev = abs(self._ratio - self._target)
+            if dev > IMBALANCE_CRIT:
+                bar_color = QColor("#8b0000")
+            elif dev > IMBALANCE_WARN:
+                bar_color = QColor("#8b6000")
+            else:
+                bar_color = self._color
+            p.setBrush(QBrush(bar_color))
+            p.setPen(Qt.NoPen)
+            p.drawRoundedRect(1, 1, bar_w, h-2, 3, 3)
+
+        # Línea de objetivo
+        if self._target > 0:
+            tx = int((w-2) * self._target)
+            p.setPen(QPen(QColor("#ffffff"), 2, Qt.DashLine))
+            p.drawLine(tx, 0, tx, h)
+
+        p.end()
+
+
+# ══════════════════════════════════════════════════════════════
+#  PANEL DE CLASES (con contador en tiempo real)
+# ══════════════════════════════════════════════════════════════
+
+class ClassPanel(QWidget):
+    class_selected         = pyqtSignal(int)
+    class_deselected       = pyqtSignal()
+    class_add_requested    = pyqtSignal()
+    class_delete_requested = pyqtSignal(int)
+    split_assigned         = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(250)
         self.setStyleSheet(f"""
             QWidget {{ background-color: {PANEL_BG}; color: {TEXT_PRIMARY}; }}
             QListWidget {{
@@ -551,6 +592,10 @@ class ClassPanel(QWidget):
             QGroupBox::title {{ subcontrol-origin: margin; padding: 0 6px; }}
         """)
         self._undo_cb = None
+        # Datos de balance para actualizar barras
+        self._class_counts: Dict[int, int] = {}
+        self._total_boxes: int = 0
+        self._bar_widgets: List[ClassBalanceBar] = []
         self._build_ui()
 
     def _build_ui(self):
@@ -558,24 +603,39 @@ class ClassPanel(QWidget):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(6)
 
-        # ── Clases ──
-        grp_cls = QGroupBox("CLASES")
+        # ── CLASES + CONTADOR ──────────────────────────────────
+        grp_cls = QGroupBox("CLASES  /  ANOTACIONES")
         cls_lay = QVBoxLayout(grp_cls)
         cls_lay.setSpacing(4)
 
+        # Lista de clases con contadores integrados
         self.class_list = QListWidget()
+        self.class_list.setMinimumHeight(90)
         self.class_list.itemClicked.connect(self._on_class_clicked)
         cls_lay.addWidget(self.class_list)
+
+        # Área de barras de balance (una por clase)
+        self.balance_area = QWidget()
+        self.balance_layout = QVBoxLayout(self.balance_area)
+        self.balance_layout.setContentsMargins(0, 0, 0, 0)
+        self.balance_layout.setSpacing(2)
+        cls_lay.addWidget(self.balance_area)
+
+        # Indicador global de balance
+        self.balance_indicator = QLabel("Balance: —")
+        self.balance_indicator.setAlignment(Qt.AlignCenter)
+        self.balance_indicator.setStyleSheet(
+            f"font-size: 11px; font-weight: bold; border-radius: 4px; padding: 3px;"
+        )
+        cls_lay.addWidget(self.balance_indicator)
 
         row = QHBoxLayout()
         btn_add = QPushButton("＋ Añadir")
         btn_add.setStyleSheet(btn_style("#2a4a2a", "#3a6a3a"))
         btn_add.clicked.connect(lambda: self.class_add_requested.emit())
-
         btn_del = QPushButton("✕ Quitar")
         btn_del.setStyleSheet(btn_style("#4a2a2a", "#6a3a3a"))
         btn_del.clicked.connect(self._on_delete_clicked)
-
         row.addWidget(btn_add)
         row.addWidget(btn_del)
         cls_lay.addLayout(row)
@@ -590,10 +650,11 @@ class ClassPanel(QWidget):
         hint.setStyleSheet(f"color: #555588; font-size: 10px; font-style: italic;")
         lay.addWidget(hint)
 
-        # ── Anotaciones ──
+        # ── ANOTACIONES IMAGEN ACTUAL ──────────────────────────
         grp_ann = QGroupBox("ANOTACIONES (imagen actual)")
         ann_lay = QVBoxLayout(grp_ann)
         self.ann_list = QListWidget()
+        self.ann_list.setMaximumHeight(100)
         self.ann_list.setStyleSheet(f"QListWidget {{ background: {DARK_BG}; border-radius: 4px; }}")
         ann_lay.addWidget(self.ann_list)
         btn_undo = QPushButton("↩ Deshacer última")
@@ -602,7 +663,7 @@ class ClassPanel(QWidget):
         ann_lay.addWidget(btn_undo)
         lay.addWidget(grp_ann)
 
-        # ── Split asignación ──
+        # ── SPLIT ─────────────────────────────────────────────
         grp_split = QGroupBox("ASIGNAR IMAGEN A SPLIT")
         split_lay = QVBoxLayout(grp_split)
         self.split_label = QLabel("Split actual: —")
@@ -633,11 +694,88 @@ class ClassPanel(QWidget):
     def load_classes(self, classes: List[YoloClass]):
         self.class_list.clear()
         for cls in classes:
-            item = QListWidgetItem(f"  {cls.id+1}.  {cls.name}")
+            cnt = self._class_counts.get(cls.id, 0)
+            item = QListWidgetItem(f"  {cls.id+1}.  {cls.name}   [{cnt}]")
             item.setForeground(cls.color)
             pix = QPixmap(12, 12); pix.fill(cls.color)
             item.setIcon(QIcon(pix))
             self.class_list.addItem(item)
+
+    def update_class_counts(self, classes: List[YoloClass],
+                            counts: Dict[int, int], total: int):
+        """
+        Refresca los contadores en la lista y las barras de balance.
+        Debe llamarse cada vez que cambia cualquier anotación.
+        """
+        self._class_counts = counts
+        self._total_boxes  = total
+
+        # Actualizar textos de la lista
+        for row, cls in enumerate(classes):
+            item = self.class_list.item(row)
+            if item:
+                cnt = counts.get(cls.id, 0)
+                item.setText(f"  {cls.id+1}.  {cls.name}   [{cnt}]")
+
+        # Reconstruir barras de balance
+        # Limpiar las anteriores
+        while self.balance_layout.count():
+            child = self.balance_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self._bar_widgets.clear()
+
+        if not classes or total == 0:
+            self.balance_indicator.setText("Balance: sin datos")
+            self.balance_indicator.setStyleSheet(
+                f"font-size:11px; font-weight:bold; "
+                f"color:{TEXT_MUTED}; border-radius:4px; padding:3px;"
+            )
+            return
+
+        target = 1.0 / len(classes)  # distribución uniforme ideal
+
+        for cls in classes:
+            cnt  = counts.get(cls.id, 0)
+            ratio = cnt / total if total > 0 else 0.0
+
+            row_w = QWidget()
+            row_l = QHBoxLayout(row_w)
+            row_l.setContentsMargins(0, 0, 0, 0)
+            row_l.setSpacing(4)
+
+            lbl = QLabel(f"{cls.name[:10]}")
+            lbl.setFixedWidth(72)
+            lbl.setStyleSheet(f"color:{cls.color_hex}; font-size:10px;")
+            lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+            bar = ClassBalanceBar()
+            bar.set_data(ratio, target, cls.color)
+
+            pct_lbl = QLabel(f"{ratio*100:.0f}%")
+            pct_lbl.setFixedWidth(30)
+            pct_lbl.setStyleSheet(f"color:{TEXT_MUTED}; font-size:10px;")
+
+            row_l.addWidget(lbl)
+            row_l.addWidget(bar, 1)
+            row_l.addWidget(pct_lbl)
+            self.balance_layout.addWidget(row_w)
+            self._bar_widgets.append(bar)
+
+        # Indicador global
+        vals = [counts.get(c.id, 0) for c in classes]
+        ratio_global = (max(vals)-min(vals)) / max(vals) if max(vals) > 0 else 0.0
+        if ratio_global > IMBALANCE_CRIT:
+            color, text = "#cc2222", f"⚠ DESBALANCE CRÍTICO ({ratio_global*100:.0f}%)"
+        elif ratio_global > IMBALANCE_WARN:
+            color, text = "#cc8800", f"⚡ Desbalance moderado ({ratio_global*100:.0f}%)"
+        else:
+            color, text = "#228b22", f"✔ Dataset equilibrado ({ratio_global*100:.0f}%)"
+        self.balance_indicator.setText(text)
+        self.balance_indicator.setStyleSheet(
+            f"font-size:11px; font-weight:bold; color:white; "
+            f"background:{color}; border-radius:4px; padding:3px;"
+        )
 
     def update_annotations(self, boxes: List[BoundingBox], classes: List[YoloClass]):
         self.ann_list.clear()
@@ -651,14 +789,13 @@ class ClassPanel(QWidget):
                 item.setForeground(cls.color)
             self.ann_list.addItem(item)
 
-    def update_split_label(self, split: Optional[str]):
+    def update_split_label(self, split):
         text  = SPLIT_TEXT.get(split, "—")
         color = SPLIT_COLORS.get(split, QColor("#333355"))
         self.split_label.setText(f"Split actual: {text}")
         self.split_label.setStyleSheet(
-            f"font-size: 13px; font-weight: bold; "
-            f"color: white; background-color: {color.name()}; "
-            f"border-radius: 4px; padding: 4px;"
+            f"font-size:13px; font-weight:bold; color:white; "
+            f"background-color:{color.name()}; border-radius:4px; padding:4px;"
         )
 
     def update_stats(self, stats: dict):
@@ -668,7 +805,7 @@ class ClassPanel(QWidget):
             f"Sin asignar: {stats['unassigned']}"
         )
 
-    # ── Handlers internos ──────────────────────────────────────
+    # ── Handlers ──────────────────────────────────────────────
 
     def _on_delete_clicked(self):
         row = self.class_list.currentRow()
@@ -679,14 +816,11 @@ class ClassPanel(QWidget):
                                     "Selecciona una clase de la lista para eliminarla.")
 
     def _on_class_clicked(self, item):
-        row = self.class_list.row(item)
-        self.class_selected.emit(row)
+        self.class_selected.emit(self.class_list.row(item))
 
     def _deselect(self):
         self.class_list.clearSelection()
         self.class_deselected.emit()
-
-    # ── Diálogo de nueva clase ──
 
     def open_add_class_dialog(self) -> tuple:
         dialog = QDialog(self)
@@ -704,16 +838,12 @@ class ClassPanel(QWidget):
 
         chosen = [QColor("#FF4444")]
         cbtn = QPushButton("  Elegir color")
-        cbtn.setStyleSheet(
-            f"background:{chosen[0].name()}; color:white; border-radius:4px; padding:4px;"
-        )
+        cbtn.setStyleSheet(f"background:{chosen[0].name()}; color:white; border-radius:4px; padding:4px;")
         def pick():
             c = QColorDialog.getColor(chosen[0], dialog)
             if c.isValid():
                 chosen[0] = c
-                cbtn.setStyleSheet(
-                    f"background:{c.name()}; color:white; border-radius:4px; padding:4px;"
-                )
+                cbtn.setStyleSheet(f"background:{c.name()}; color:white; border-radius:4px; padding:4px;")
         cbtn.clicked.connect(pick)
         lay.addRow("Color:", cbtn)
 
@@ -728,6 +858,261 @@ class ClassPanel(QWidget):
             if name:
                 return name, chosen[0]
         return None, None
+
+
+# ══════════════════════════════════════════════════════════════
+#  DIÁLOGO DE BALANCE INTELIGENTE
+# ══════════════════════════════════════════════════════════════
+
+class BalanceDialog(QDialog):
+    """
+    Permite configurar y ejecutar el balanceo inteligente del dataset.
+
+    Estrategia:
+      - El usuario define qué % máximo puede tener cada clase.
+      - El algoritmo identifica las imágenes donde la clase dominante supera
+        ese límite y ELIMINA ANOTACIONES de esa clase en esas imágenes
+        (no borra imágenes), empezando por las que más contribuyen al desbalance.
+      - Opcionalmente puede marcar imágenes enteras como excluidas del split.
+    """
+
+    def __init__(self, project: Project, parent=None):
+        super().__init__(parent)
+        self.project = project
+        self.setWindowTitle("⚖ Balance Inteligente de Dataset")
+        self.setMinimumSize(640, 580)
+        self.setStyleSheet(f"background:{CARD_BG}; color:{TEXT_PRIMARY};")
+        self._class_spins: Dict[int, QSpinBox] = {}
+        self._preview_result: Optional[dict] = None
+        self._build_ui()
+        self._refresh_current_state()
+
+    def _build_ui(self):
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+        lay.setContentsMargins(14, 14, 14, 14)
+
+        # ── Estado actual ──────────────────────────────────────
+        grp_state = QGroupBox("Estado actual del dataset")
+        grp_state.setStyleSheet(self._grp_style())
+        state_lay = QVBoxLayout(grp_state)
+
+        self.state_table = QTextEdit()
+        self.state_table.setReadOnly(True)
+        self.state_table.setFixedHeight(110)
+        self.state_table.setStyleSheet(
+            f"background:{DARK_BG}; color:{TEXT_PRIMARY}; "
+            f"font-family:Consolas; font-size:11px; border-radius:4px;"
+        )
+        state_lay.addWidget(self.state_table)
+        lay.addWidget(grp_state)
+
+        # ── Configuración de límites por clase ─────────────────
+        grp_cfg = QGroupBox("Configurar límites por clase  (% máximo sobre el total de anotaciones)")
+        grp_cfg.setStyleSheet(self._grp_style())
+        cfg_lay = QVBoxLayout(grp_cfg)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFixedHeight(160)
+        scroll.setStyleSheet(f"background:{DARK_BG}; border:none;")
+        inner = QWidget()
+        inner_lay = QVBoxLayout(inner)
+        inner_lay.setSpacing(6)
+
+        counts = self.project.class_counts()
+        total  = sum(counts.values()) or 1
+        n_cls  = len(self.project.classes)
+        default_pct = max(10, int(100 / n_cls * 1.5)) if n_cls else 50
+
+        for cls in self.project.classes:
+            row_w = QWidget()
+            row_l = QHBoxLayout(row_w)
+            row_l.setContentsMargins(4, 2, 4, 2)
+
+            pix = QPixmap(12, 12); pix.fill(cls.color)
+            ico = QLabel(); ico.setPixmap(pix)
+            row_l.addWidget(ico)
+
+            lbl = QLabel(f"{cls.name}")
+            lbl.setFixedWidth(120)
+            lbl.setStyleSheet(f"color:{cls.color_hex}; font-size:12px;")
+            row_l.addWidget(lbl)
+
+            cnt = counts.get(cls.id, 0)
+            cur_pct = cnt * 100 // total
+            cur_lbl = QLabel(f"Actual: {cnt}  ({cur_pct}%)")
+            cur_lbl.setStyleSheet(f"color:{TEXT_MUTED}; font-size:11px;")
+            cur_lbl.setFixedWidth(130)
+            row_l.addWidget(cur_lbl)
+
+            spin = QSpinBox()
+            spin.setRange(1, 100)
+            spin.setValue(default_pct)
+            spin.setSuffix(" % máx")
+            spin.setFixedWidth(90)
+            spin.setStyleSheet(self._input_style())
+            row_l.addWidget(spin)
+            row_l.addStretch()
+
+            self._class_spins[cls.id] = spin
+            inner_lay.addWidget(row_w)
+
+        inner_lay.addStretch()
+        scroll.setWidget(inner)
+        cfg_lay.addWidget(scroll)
+
+        # Opción de estrategia
+        strat_row = QHBoxLayout()
+        strat_row.addWidget(QLabel("Estrategia:"))
+        self.strat_combo = QComboBox()
+        self.strat_combo.addItems([
+            "Eliminar anotaciones excedentes (recomendado)",
+            "Excluir imágenes del split (conservador)",
+        ])
+        self.strat_combo.setStyleSheet(self._input_style())
+        strat_row.addWidget(self.strat_combo, 1)
+        cfg_lay.addLayout(strat_row)
+        lay.addWidget(grp_cfg)
+
+        # ── Preview ────────────────────────────────────────────
+        grp_prev = QGroupBox("Vista previa del resultado")
+        grp_prev.setStyleSheet(self._grp_style())
+        prev_lay = QVBoxLayout(grp_prev)
+
+        self.preview_text = QTextEdit()
+        self.preview_text.setReadOnly(True)
+        self.preview_text.setFixedHeight(110)
+        self.preview_text.setStyleSheet(
+            f"background:{DARK_BG}; color:#aaffaa; "
+            f"font-family:Consolas; font-size:11px; border-radius:4px;"
+        )
+        self.preview_text.setPlainText("Pulsa 'Calcular vista previa' para ver el impacto.")
+        prev_lay.addWidget(self.preview_text)
+        lay.addWidget(grp_prev)
+
+        # ── Botones ────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+
+        btn_preview = QPushButton("🔍  Calcular vista previa")
+        btn_preview.setStyleSheet(btn_style("#2a3a5a", "#4a6aaa"))
+        btn_preview.clicked.connect(self._compute_preview)
+
+        self.btn_apply = QPushButton("⚖  Realizar balanceo")
+        self.btn_apply.setStyleSheet(btn_style("#2a5a2a", "#3a8a3a"))
+        self.btn_apply.setEnabled(False)
+        self.btn_apply.clicked.connect(self.accept)
+
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.setStyleSheet(btn_style())
+        btn_cancel.clicked.connect(self.reject)
+
+        btn_row.addWidget(btn_preview)
+        btn_row.addWidget(self.btn_apply)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_cancel)
+        lay.addLayout(btn_row)
+
+    def _refresh_current_state(self):
+        counts = self.project.class_counts()
+        total  = sum(counts.values())
+        lines  = [f"  {'Clase':<20} {'Anotaciones':>12} {'%':>6}",
+                  "  " + "─"*42]
+        for cls in self.project.classes:
+            cnt = counts.get(cls.id, 0)
+            pct = cnt * 100 / total if total else 0
+            bar = "█" * int(pct / 5)
+            lines.append(f"  {cls.name:<20} {cnt:>12}  {pct:>5.1f}%  {bar}")
+        lines.append(f"\n  Total anotaciones: {total}")
+        ratio = self.project.imbalance_ratio()
+        level = "CRÍTICO" if ratio > IMBALANCE_CRIT else ("MODERADO" if ratio > IMBALANCE_WARN else "OK")
+        lines.append(f"  Índice de desbalance: {ratio*100:.1f}%  [{level}]")
+        self.state_table.setPlainText("\n".join(lines))
+
+    def _compute_preview(self):
+        result = self._simulate()
+        self._preview_result = result
+        lines = ["  Impacto estimado del balanceo:\n"]
+        for cls in self.project.classes:
+            before = result["before"].get(cls.id, 0)
+            after  = result["after"].get(cls.id, 0)
+            diff   = after - before
+            sign   = "" if diff >= 0 else ""
+            lines.append(f"  {cls.name:<20}  {before:>6} → {after:>6}  ({sign}{diff:+d})")
+        lines.append(f"\n  Imágenes afectadas: {result['images_affected']}")
+        lines.append(f"  Anotaciones eliminadas: {result['boxes_removed']}")
+        if self.strat_combo.currentIndex() == 1:
+            lines.append(f"  Imágenes excluidas de split: {result['images_excluded']}")
+        self.preview_text.setPlainText("\n".join(lines))
+        self.btn_apply.setEnabled(True)
+
+    def _simulate(self) -> dict:
+        """Calcula cuántas anotaciones se eliminarían sin tocar el proyecto."""
+        limits = {cls.id: self._class_spins[cls.id].value() / 100.0
+                  for cls in self.project.classes}
+        counts_before = self.project.class_counts()
+        total_before  = sum(counts_before.values()) or 1
+
+        counts_after  = dict(counts_before)
+        boxes_removed = 0
+        images_affected = 0
+        images_excluded = 0
+
+        for rec in self.project.images:
+            if not rec.boxes:
+                continue
+            rec_counts = {}
+            for b in rec.boxes:
+                rec_counts[b.class_id] = rec_counts.get(b.class_id, 0) + 1
+
+            # ¿Alguna clase excede su límite global?
+            modified = False
+            for cid, lim in limits.items():
+                cur_global = counts_after.get(cid, 0)
+                total_after = sum(counts_after.values()) or 1
+                if total_after > 0 and cur_global / total_after > lim + 0.001:
+                    # Eliminar anotaciones de esta clase en esta imagen
+                    excess = rec_counts.get(cid, 0)
+                    if excess > 0:
+                        counts_after[cid] = max(0, counts_after.get(cid, 0) - excess)
+                        boxes_removed += excess
+                        modified = True
+
+            if modified:
+                images_affected += 1
+                if self.strat_combo.currentIndex() == 1:
+                    images_excluded += 1
+
+        return {
+            "before": counts_before,
+            "after":  counts_after,
+            "boxes_removed": boxes_removed,
+            "images_affected": images_affected,
+            "images_excluded": images_excluded,
+            "limits": limits,
+            "strategy": self.strat_combo.currentIndex(),
+        }
+
+    def get_config(self) -> dict:
+        """Devuelve la configuración final para que la ventana principal la aplique."""
+        return {
+            "limits":   {cls.id: self._class_spins[cls.id].value() / 100.0
+                         for cls in self.project.classes},
+            "strategy": self.strat_combo.currentIndex(),
+        }
+
+    def _grp_style(self):
+        return (
+            f"QGroupBox {{ color:{TEXT_MUTED}; border:1px solid {BORDER_COLOR}; "
+            f"border-radius:6px; margin-top:8px; font-size:11px; font-weight:bold; }}"
+            f"QGroupBox::title {{ subcontrol-origin:margin; padding:0 6px; }}"
+        )
+
+    def _input_style(self):
+        return (
+            f"background:{DARK_BG}; color:{TEXT_PRIMARY}; "
+            f"border:1px solid {BORDER_COLOR}; border-radius:4px; padding:4px;"
+        )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -860,16 +1245,14 @@ class YoloAnnotatorPro(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("YOLO Annotator Pro")
-        
-        # Configurar icono de la ventana
+
         icon_path = resource_path("logoapp.png")
         if os.path.exists(icon_path):
             app_icon = QIcon(icon_path)
             self.setWindowIcon(app_icon)
-            # También establecer el icono de la aplicación
             QApplication.setWindowIcon(app_icon)
-        
-        self.setMinimumSize(1150, 720)
+
+        self.setMinimumSize(1180, 720)
         self._apply_theme()
 
         self.project: Optional[Project] = None
@@ -880,6 +1263,11 @@ class YoloAnnotatorPro(QMainWindow):
         self._build_shortcuts()
         self.statusBar().showMessage("Bienvenido. Crea un proyecto nuevo o abre uno existente.")
 
+        # Timer de notificación de desbalance (cada 30 s)
+        self._balance_timer = QTimer(self)
+        self._balance_timer.timeout.connect(self._check_balance_notification)
+        self._balance_timer.start(30_000)
+
     # ── UI ─────────────────────────────────────────────────────
 
     def _build_ui(self):
@@ -889,7 +1277,6 @@ class YoloAnnotatorPro(QMainWindow):
         root.setContentsMargins(0,0,0,0)
         root.setSpacing(0)
 
-        # Panel lateral
         self.panel = ClassPanel()
         self.panel.class_selected.connect(self._on_class_selected)
         self.panel.class_deselected.connect(self._on_class_deselected)
@@ -899,14 +1286,12 @@ class YoloAnnotatorPro(QMainWindow):
         self.panel.set_undo_callback(self._undo_last)
         root.addWidget(self.panel)
 
-        # Centro
         center = QWidget()
         center.setStyleSheet(f"background:{DARK_BG};")
         clayout = QVBoxLayout(center)
         clayout.setContentsMargins(0,0,0,0)
         clayout.setSpacing(0)
 
-        # Info bar
         self.info_bar = QLabel("Sin proyecto")
         self.info_bar.setAlignment(Qt.AlignCenter)
         self.info_bar.setStyleSheet(
@@ -916,7 +1301,6 @@ class YoloAnnotatorPro(QMainWindow):
         )
         clayout.addWidget(self.info_bar)
 
-        # Nav + canvas
         nav = QHBoxLayout()
         nav.setContentsMargins(0,0,0,0)
         nav.setSpacing(0)
@@ -934,7 +1318,6 @@ class YoloAnnotatorPro(QMainWindow):
         nav.addWidget(self.btn_next)
         clayout.addLayout(nav, 1)
 
-        # Barra inferior
         bot = QWidget()
         bot.setStyleSheet(f"background:{PANEL_BG}; border-top:1px solid {BORDER_COLOR};")
         bot_lay = QHBoxLayout(bot)
@@ -951,8 +1334,9 @@ class YoloAnnotatorPro(QMainWindow):
         bot_lay.addStretch()
 
         for label, cb, style in [
-            ("Guardar proyecto  Ctrl+S", self._save_project, btn_style("#2a3a6a","#4a6aaa")),
-            ("📤 Exportar dataset",       self._export_dataset, btn_style("#3a2a6a","#6a4aaa")),
+            ("💾 Guardar  Ctrl+S", self._save_project, btn_style("#2a3a6a","#4a6aaa")),
+            ("⚖ Balance  Ctrl+B", self._open_balance_dialog, btn_style("#3a2a6a","#6a3a8a")),
+            ("📤 Exportar",        self._export_dataset,     btn_style("#3a2a6a","#6a4aaa")),
         ]:
             b = QPushButton(label)
             b.setStyleSheet(style)
@@ -990,9 +1374,10 @@ class YoloAnnotatorPro(QMainWindow):
         self._add_action(fm, "📋  Exportar classes.txt",       "",       self._export_classes_txt)
 
         pm = mb.addMenu("Proyecto")
-        self._add_action(pm, "🔀  Auto-asignar splits",  "",  self._auto_split_dialog)
-        self._add_action(pm, "📊  Estadísticas",         "",  self._show_stats)
-        self._add_action(pm, "🗑  Limpiar sin split",     "",  self._clear_unassigned)
+        self._add_action(pm, "🔀  Auto-asignar splits",   "",       self._auto_split_dialog)
+        self._add_action(pm, "⚖   Balance inteligente",  "Ctrl+B", self._open_balance_dialog)
+        self._add_action(pm, "📊  Estadísticas",           "",       self._show_stats)
+        self._add_action(pm, "🗑  Limpiar sin split",       "",       self._clear_unassigned)
 
         vm = mb.addMenu("Vista")
         self._add_action(vm, "🔍  Ajustar a ventana  (0)", "",
@@ -1019,11 +1404,12 @@ class YoloAnnotatorPro(QMainWindow):
         QShortcut(QKeySequence(Qt.Key_Right), self, self._go_next)
         QShortcut(QKeySequence("Ctrl+Z"),     self, self._undo_last)
         QShortcut(QKeySequence("Ctrl+E"),     self, self._open_frame_extractor)
+        QShortcut(QKeySequence("Ctrl+B"),     self, self._open_balance_dialog)
         for i in range(1, 10):
             QShortcut(QKeySequence(str(i)), self,
                       lambda idx=i-1: self._select_class_by_index(idx))
 
-    # ── Proyecto: nuevo / abrir / guardar ──────────────────────
+    # ── Proyecto ───────────────────────────────────────────────
 
     def _new_project(self):
         if not self._confirm_unsaved():
@@ -1109,9 +1495,7 @@ class YoloAnnotatorPro(QMainWindow):
         self._refresh_all()
         if self._current_idx() < 0 and self.project.images:
             self._go_to(0)
-        self.statusBar().showMessage(
-            f"✅ {added} imágenes añadidas de '{folder_path.name}'."
-        )
+        self.statusBar().showMessage(f"✅ {added} imágenes añadidas de '{folder_path.name}'.")
 
     # ── Navegación ─────────────────────────────────────────────
 
@@ -1148,17 +1532,18 @@ class YoloAnnotatorPro(QMainWindow):
         self.panel.update_annotations(rec.boxes, self.project.classes)
         self.panel.update_split_label(rec.split)
         self.panel.update_stats(self.project.stats())
+        self._update_class_counters()
 
         self.btn_prev.setEnabled(idx > 0)
         self.btn_next.setEnabled(idx < total-1)
 
     def _go_prev(self):
         if self.project:
-            self._go_to(self._current_idx() - 1)
+            self._go_to(self._current_idx()-1)
 
     def _go_next(self):
         if self.project:
-            self._go_to(self._current_idx() + 1)
+            self._go_to(self._current_idx()+1)
 
     def _store_current(self):
         if not self.project or not self.project.images:
@@ -1174,9 +1559,7 @@ class YoloAnnotatorPro(QMainWindow):
             return
         cls = self.project.classes[row]
         self.canvas.set_selected_class(cls.id)
-        self.statusBar().showMessage(
-            f"Clase: {cls.name}  (id={cls.id})  |  tecla {row+1}"
-        )
+        self.statusBar().showMessage(f"Clase: {cls.name}  (id={cls.id})  |  tecla {row+1}")
 
     def _on_class_deselected(self):
         self.canvas.set_selected_class(None)
@@ -1189,8 +1572,7 @@ class YoloAnnotatorPro(QMainWindow):
 
     def _handle_add_class(self):
         if not self.project:
-            QMessageBox.information(self, "Sin proyecto",
-                                    "Crea o abre un proyecto primero.")
+            QMessageBox.information(self, "Sin proyecto", "Crea o abre un proyecto primero.")
             return
         name, color = self.panel.open_add_class_dialog()
         if name:
@@ -1202,9 +1584,8 @@ class YoloAnnotatorPro(QMainWindow):
             self.project.classes.append(cls)
             self._dirty = True
             self._refresh_classes()
-            self.statusBar().showMessage(
-                f"Clase '{name}' añadida (id={cls.id})."
-            )
+            self._update_class_counters()
+            self.statusBar().showMessage(f"Clase '{name}' añadida (id={cls.id}).")
 
     def _handle_delete_class(self, row: int):
         if not self.project or row >= len(self.project.classes):
@@ -1219,12 +1600,12 @@ class YoloAnnotatorPro(QMainWindow):
         if reply != QMessageBox.Yes:
             return
         self.project.classes.pop(row)
-        # Reasignar IDs correlativos
         for i, c in enumerate(self.project.classes):
             c.id = i
         self._dirty = True
         self._refresh_classes()
         self.canvas.set_selected_class(None)
+        self._update_class_counters()
         self.statusBar().showMessage(f"Clase '{cls.name}' eliminada.")
 
     def _refresh_classes(self):
@@ -1239,6 +1620,15 @@ class YoloAnnotatorPro(QMainWindow):
         self.setWindowTitle(f"YOLO Annotator Pro — {self.project.name}")
         self._refresh_classes()
         self.panel.update_stats(self.project.stats())
+        self._update_class_counters()
+
+    def _update_class_counters(self):
+        """Recalcula y actualiza contadores y barras de balance en tiempo real."""
+        if not self.project:
+            return
+        counts = self.project.class_counts()
+        total  = sum(counts.values())
+        self.panel.update_class_counts(self.project.classes, counts, total)
 
     # ── Anotaciones ────────────────────────────────────────────
 
@@ -1248,6 +1638,7 @@ class YoloAnnotatorPro(QMainWindow):
             rec = self.project.images[self._current_idx()]
             self.panel.update_annotations(rec.boxes, self.project.classes)
         self._dirty = True
+        self._update_class_counters()
 
     def _on_box_removed(self):
         self._store_current()
@@ -1255,6 +1646,7 @@ class YoloAnnotatorPro(QMainWindow):
             rec = self.project.images[self._current_idx()]
             self.panel.update_annotations(rec.boxes, self.project.classes)
         self._dirty = True
+        self._update_class_counters()
 
     def _undo_last(self):
         self.canvas.remove_last_box()
@@ -1263,6 +1655,7 @@ class YoloAnnotatorPro(QMainWindow):
             rec = self.project.images[self._current_idx()]
             self.panel.update_annotations(rec.boxes, self.project.classes)
         self._dirty = True
+        self._update_class_counters()
 
     # ── Split ──────────────────────────────────────────────────
 
@@ -1314,18 +1707,17 @@ class YoloAnnotatorPro(QMainWindow):
         if dialog.exec_() != QDialog.Accepted:
             return
 
-        import random
         pt, pv = pct_train.value(), pct_valid.value()
         images = [r for r in self.project.images
                   if not only_unassigned.isChecked() or r.split is None]
         random.shuffle(images)
         n = len(images)
-        n_train = int(n * pt / 100)
-        n_valid = int(n * pv / 100)
+        n_train = int(n*pt/100)
+        n_valid = int(n*pv/100)
         for i, rec in enumerate(images):
-            if i < n_train:              rec.split = "train"
-            elif i < n_train + n_valid:  rec.split = "valid"
-            else:                        rec.split = "test"
+            if i < n_train:             rec.split = "train"
+            elif i < n_train+n_valid:   rec.split = "valid"
+            else:                       rec.split = "test"
         self.panel.update_stats(self.project.stats())
         self._dirty = True
         self.statusBar().showMessage(f"Auto-split aplicado a {n} imágenes.")
@@ -1347,6 +1739,138 @@ class YoloAnnotatorPro(QMainWindow):
             self._dirty = True
             self.panel.update_stats(self.project.stats())
 
+    # ── BALANCE INTELIGENTE ────────────────────────────────────
+
+    def _open_balance_dialog(self):
+        if not self.project:
+            QMessageBox.information(self, "Sin proyecto", "Crea o abre un proyecto primero.")
+            return
+        if len(self.project.classes) < 2:
+            QMessageBox.information(self, "Sin datos",
+                                    "Necesitas al menos 2 clases para usar el balance.")
+            return
+        counts = self.project.class_counts()
+        if sum(counts.values()) == 0:
+            QMessageBox.information(self, "Sin anotaciones",
+                                    "No hay anotaciones en el proyecto todavía.")
+            return
+
+        self._store_current()
+        dlg = BalanceDialog(self.project, self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+
+        cfg = dlg.get_config()
+        self._apply_balance(cfg)
+
+    def _apply_balance(self, cfg: dict):
+        """
+        Aplica el balanceo al proyecto según la configuración del diálogo.
+
+        Estrategia 0 — Eliminar anotaciones excedentes:
+          Para cada imagen, calcula qué clases superan su límite global
+          y elimina las anotaciones de esa clase en esa imagen,
+          empezando por las imágenes con más exceso.
+
+        Estrategia 1 — Excluir imágenes del split:
+          Marca como split=None las imágenes que más contribuyen
+          al desequilibrio.
+        """
+        limits   = cfg["limits"]    # {class_id: max_ratio}
+        strategy = cfg["strategy"]  # 0 = borrar annots, 1 = excluir imágenes
+
+        boxes_removed   = 0
+        images_affected = 0
+
+        # Iteramos hasta que el dataset cumpla los límites o no haya más que hacer
+        MAX_ITERATIONS = 100
+        for _ in range(MAX_ITERATIONS):
+            counts = self.project.class_counts()
+            total  = sum(counts.values())
+            if total == 0:
+                break
+
+            # ¿Alguna clase excede su límite?
+            offenders = {
+                cid: counts[cid]
+                for cid, lim in limits.items()
+                if counts.get(cid, 0) / total > lim + 0.001
+            }
+            if not offenders:
+                break  # ya está balanceado
+
+            # Encontrar el offender más grave
+            worst_cid = max(offenders, key=lambda c: offenders[c]/total - limits[c])
+
+            if strategy == 0:
+                # Buscar la imagen que más contribuye al exceso de worst_cid
+                best_img = max(
+                    (rec for rec in self.project.images
+                     if any(b.class_id == worst_cid for b in rec.boxes)),
+                    key=lambda rec: sum(1 for b in rec.boxes if b.class_id == worst_cid),
+                    default=None
+                )
+                if best_img is None:
+                    break
+                # Eliminar UNA anotación de worst_cid en esa imagen
+                for i, b in enumerate(best_img.boxes):
+                    if b.class_id == worst_cid:
+                        best_img.boxes.pop(i)
+                        boxes_removed += 1
+                        images_affected += 1
+                        break
+            else:
+                # Excluir del split la imagen que más exceso aporta
+                best_img = max(
+                    (rec for rec in self.project.images
+                     if rec.split is not None and
+                     any(b.class_id == worst_cid for b in rec.boxes)),
+                    key=lambda rec: sum(1 for b in rec.boxes if b.class_id == worst_cid),
+                    default=None
+                )
+                if best_img is None:
+                    break
+                best_img.split = None
+                images_affected += 1
+
+        self._dirty = True
+
+        # Si estábamos en la imagen actual, recargar sus boxes
+        if self.project.images:
+            rec = self.project.images[self._current_idx()]
+            self.canvas.set_boxes(rec.boxes)
+            self.panel.update_annotations(rec.boxes, self.project.classes)
+
+        self._update_class_counters()
+        self.panel.update_stats(self.project.stats())
+
+        ratio_after = self.project.imbalance_ratio()
+        msg = (
+            f"✅ Balanceo completado.\n\n"
+            f"Anotaciones eliminadas: {boxes_removed}\n"
+            f"Imágenes afectadas: {images_affected}\n"
+            f"Índice de desbalance resultante: {ratio_after*100:.1f}%"
+        ) if strategy == 0 else (
+            f"✅ Balanceo completado.\n\n"
+            f"Imágenes excluidas del split: {images_affected}\n"
+            f"Índice de desbalance resultante: {ratio_after*100:.1f}%"
+        )
+        QMessageBox.information(self, "Balance completado", msg)
+        self.statusBar().showMessage(
+            f"Balance aplicado — desbalance resultante: {ratio_after*100:.1f}%"
+        )
+
+    def _check_balance_notification(self):
+        """Se ejecuta cada 30 s para notificar desbalances críticos."""
+        if not self.project or len(self.project.classes) < 2:
+            return
+        ratio = self.project.imbalance_ratio()
+        if ratio > IMBALANCE_CRIT:
+            self.statusBar().showMessage(
+                f"⚠ DESBALANCE CRÍTICO detectado ({ratio*100:.0f}%) — "
+                f"Usa Proyecto → Balance inteligente  (Ctrl+B)"
+            )
+
     # ── Exportación ────────────────────────────────────────────
 
     def _export_dataset(self):
@@ -1365,28 +1889,25 @@ class YoloAnnotatorPro(QMainWindow):
             return
 
         if cfg["auto_split"]:
-            import random
             unassigned = [r for r in self.project.images if r.split is None]
             random.shuffle(unassigned)
             n = len(unassigned)
-            nt = int(n * cfg["pct_train"] / 100)
-            nv = int(n * cfg["pct_valid"] / 100)
+            nt = int(n*cfg["pct_train"]/100)
+            nv = int(n*cfg["pct_valid"]/100)
             for i, rec in enumerate(unassigned):
                 rec.split = "train" if i < nt else ("valid" if i < nt+nv else "test")
 
         root = Path(cfg["dest"]) / cfg["name"]
+        for split in ("train","valid","test"):
+            (root/split/"images").mkdir(parents=True, exist_ok=True)
+            (root/split/"labels").mkdir(parents=True, exist_ok=True)
 
-        for split in ("train", "valid", "test"):
-            (root / split / "images").mkdir(parents=True, exist_ok=True)
-            (root / split / "labels").mkdir(parents=True, exist_ok=True)
-
-        prog = QProgressDialog(
-            "Exportando dataset…", "Cancelar", 0, len(self.project.images), self
-        )
+        prog = QProgressDialog("Exportando dataset…", "Cancelar",
+                               0, len(self.project.images), self)
         prog.setWindowModality(Qt.WindowModal)
         prog.setStyleSheet(f"background:{CARD_BG}; color:{TEXT_PRIMARY};")
 
-        counts = {"train":0, "valid":0, "test":0, "skipped":0}
+        counts = {"train":0,"valid":0,"test":0,"skipped":0}
         for i, rec in enumerate(self.project.images):
             prog.setValue(i)
             if prog.wasCanceled():
@@ -1399,43 +1920,34 @@ class YoloAnnotatorPro(QMainWindow):
             split_dir = root / rec.split
 
             if cfg["copy_images"]:
-                dest_img = split_dir / "images" / img_path.name
-                shutil.copy2(str(img_path), str(dest_img))
+                shutil.copy2(str(img_path), str(split_dir/"images"/img_path.name))
 
             img = cv2.imread(str(img_path))
             if img is None:
                 continue
             ih, iw = img.shape[:2]
-            label_path = split_dir / "labels" / (img_path.stem + ".txt")
-            with open(label_path, "w") as f:
+            with open(split_dir/"labels"/(img_path.stem+".txt"), "w") as f:
                 for box in rec.boxes:
-                    f.write(box.to_yolo_line(iw, ih) + "\n")
+                    f.write(box.to_yolo_line(iw, ih)+"\n")
             counts[rec.split] += 1
 
         prog.setValue(len(self.project.images))
 
         if cfg["gen_yaml"]:
-            yaml_path = root / "data.yaml"
-            with open(yaml_path, "w") as f:
-                f.write(f"path: {root}\n")
-                f.write(f"train: train/images\n")
-                f.write(f"val:   valid/images\n")
-                f.write(f"test:  test/images\n\n")
+            with open(root/"data.yaml","w") as f:
+                f.write(f"path: {root}\ntrain: train/images\nval: valid/images\ntest: test/images\n\n")
                 f.write(f"nc: {len(self.project.classes)}\n")
                 names = [c.name for c in sorted(self.project.classes, key=lambda x: x.id)]
                 f.write(f"names: {names}\n")
 
-        classes_path = root / "classes.txt"
-        with open(classes_path, "w") as f:
+        with open(root/"classes.txt","w") as f:
             for cls in sorted(self.project.classes, key=lambda x: x.id):
-                f.write(cls.name + "\n")
+                f.write(cls.name+"\n")
 
-        QMessageBox.information(
-            self, "✅ Exportación completada",
+        QMessageBox.information(self, "✅ Exportación completada",
             f"Dataset exportado en:\n{root}\n\n"
             f"Train: {counts['train']}  |  Valid: {counts['valid']}  |  Test: {counts['test']}\n"
-            f"Omitidas (sin split): {counts['skipped']}"
-        )
+            f"Omitidas (sin split): {counts['skipped']}")
         self.statusBar().showMessage(f"✅ Dataset exportado en {root}")
 
     def _export_classes_txt(self):
@@ -1444,9 +1956,9 @@ class YoloAnnotatorPro(QMainWindow):
             return
         path, _ = QFileDialog.getSaveFileName(self, "Guardar classes.txt", "classes.txt")
         if path:
-            with open(path, "w") as f:
+            with open(path,"w") as f:
                 for cls in sorted(self.project.classes, key=lambda x: x.id):
-                    f.write(cls.name + "\n")
+                    f.write(cls.name+"\n")
             self.statusBar().showMessage(f"✅ {path}")
 
     # ── Stats ──────────────────────────────────────────────────
@@ -1456,14 +1968,13 @@ class YoloAnnotatorPro(QMainWindow):
             return
         s = self.project.stats()
         total_boxes = sum(len(r.boxes) for r in self.project.images)
-        cls_counts  = {}
-        for rec in self.project.images:
-            for b in rec.boxes:
-                cls_counts[b.class_id] = cls_counts.get(b.class_id, 0) + 1
+        counts = self.project.class_counts()
         cls_lines = "\n".join(
             f"  {self.project.get_class(cid).name if self.project.get_class(cid) else cid}: {n}"
-            for cid, n in sorted(cls_counts.items())
+            for cid, n in sorted(counts.items())
         )
+        ratio = self.project.imbalance_ratio()
+        level = "CRÍTICO ⚠" if ratio > IMBALANCE_CRIT else ("MODERADO ⚡" if ratio > IMBALANCE_WARN else "OK ✔")
         QMessageBox.information(self, "Estadísticas del proyecto", f"""
 Proyecto: {self.project.name}
 
@@ -1482,6 +1993,8 @@ Cajas totales: {total_boxes}
 
 Por clase:
 {cls_lines if cls_lines else '  (sin anotaciones)'}
+
+Índice de desbalance: {ratio*100:.1f}%  [{level}]
         """)
 
     # ── Cierre ─────────────────────────────────────────────────
@@ -1507,8 +2020,7 @@ Por clase:
             if reply == QMessageBox.Yes:
                 self._save_project()
             elif reply == QMessageBox.Cancel:
-                event.ignore()
-                return
+                event.ignore(); return
         event.accept()
 
     # ── Extractor de frames ────────────────────────────────────
@@ -1526,6 +2038,7 @@ Por clase:
         QMessageBox.information(self, "Atajos de teclado", """
 Herramientas:
   Ctrl+E             Abrir Extractor de Frames
+  Ctrl+B             Balance inteligente de dataset
 
 Navegación:
   ←  /  →           Imagen anterior / siguiente
@@ -1546,8 +2059,7 @@ Proyecto:
   Ctrl+S            Guardar proyecto
 
 Splits:
-  Botones TRAIN / VALID / TEST en el panel izquierdo
-  asignan la imagen actual a ese split.
+  Botones TRAIN / VALID / TEST en el panel izquierdo.
         """)
 
     # ── Tema ───────────────────────────────────────────────────
@@ -1573,26 +2085,25 @@ Splits:
 
 
 # ══════════════════════════════════════════════════════════════
-#  EXTRACTOR DE FRAMES (integrado)
+#  EXTRACTOR DE FRAMES
 # ══════════════════════════════════════════════════════════════
 
 class FrameExtractorDialog(QDialog):
-    def __init__(self, project: Optional["Project"], parent=None):
+    def __init__(self, project, parent=None):
         super().__init__(parent)
         self.project = project
         self.setWindowTitle("Extractor de Frames")
         self.setMinimumSize(580, 520)
         self.setStyleSheet(f"background:{CARD_BG}; color:{TEXT_PRIMARY};")
-        self._last_output_folder: Optional[Path] = None
+        self._last_output_folder = None
         self._running = False
         self._build_ui()
 
     def _build_ui(self):
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
-        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setContentsMargins(16,16,16,16)
 
-        # ── Fuente ──
         grp_src = QGroupBox("Fuente del vídeo")
         grp_src.setStyleSheet(self._grp_style())
         src_lay = QVBoxLayout(grp_src)
@@ -1613,12 +2124,11 @@ class FrameExtractorDialog(QDialog):
         self.local_edit = QLineEdit()
         self.local_edit.setPlaceholderText("Ruta al archivo de vídeo…")
         self.local_edit.setStyleSheet(self._input_style())
-        btn_browse_vid = QPushButton("…")
-        btn_browse_vid.setFixedWidth(34)
-        btn_browse_vid.setStyleSheet(btn_style())
-        btn_browse_vid.clicked.connect(self._browse_video)
+        btn_bv = QPushButton("…"); btn_bv.setFixedWidth(34)
+        btn_bv.setStyleSheet(btn_style())
+        btn_bv.clicked.connect(self._browse_video)
         local_row.addWidget(self.local_edit)
-        local_row.addWidget(btn_browse_vid)
+        local_row.addWidget(btn_bv)
         src_lay.addWidget(self.local_widget)
 
         self.yt_widget = QWidget()
@@ -1629,7 +2139,7 @@ class FrameExtractorDialog(QDialog):
         self.yt_edit.setStyleSheet(self._input_style())
         yt_lay.addWidget(self.yt_edit)
         yt_note = QLabel("⚠️  Requiere:  pip install yt-dlp")
-        yt_note.setStyleSheet(f"color:#aa8800; font-size:10px;")
+        yt_note.setStyleSheet("color:#aa8800; font-size:10px;")
         yt_lay.addWidget(yt_note)
         self.yt_widget.hide()
         src_lay.addWidget(self.yt_widget)
@@ -1637,84 +2147,68 @@ class FrameExtractorDialog(QDialog):
         self.rb_local.toggled.connect(self._toggle_source)
         lay.addWidget(grp_src)
 
-        # ── Opciones ──
         grp_opt = QGroupBox("Opciones de extracción")
         grp_opt.setStyleSheet(self._grp_style())
         opt_form = QFormLayout(grp_opt)
 
         self.fps_spin = QDoubleSpinBox()
-        self.fps_spin.setRange(0.1, 30.0)
-        self.fps_spin.setValue(1.0)
-        self.fps_spin.setSingleStep(0.5)
-        self.fps_spin.setSuffix("  frame/s")
+        self.fps_spin.setRange(0.1, 30.0); self.fps_spin.setValue(1.0)
+        self.fps_spin.setSingleStep(0.5); self.fps_spin.setSuffix("  frame/s")
         self.fps_spin.setStyleSheet(self._input_style())
-        opt_form.addRow("Cadencia de extracción:", self.fps_spin)
+        opt_form.addRow("Cadencia:", self.fps_spin)
 
         self.fmt_combo = QComboBox()
-        self.fmt_combo.addItems(["jpg", "png"])
+        self.fmt_combo.addItems(["jpg","png"])
         self.fmt_combo.setStyleSheet(self._input_style())
-        opt_form.addRow("Formato de imagen:", self.fmt_combo)
+        opt_form.addRow("Formato:", self.fmt_combo)
 
         self.quality_spin = QSpinBox()
-        self.quality_spin.setRange(1, 100)
-        self.quality_spin.setValue(95)
-        self.quality_spin.setSuffix("  %")
-        self.quality_spin.setStyleSheet(self._input_style())
+        self.quality_spin.setRange(1,100); self.quality_spin.setValue(95)
+        self.quality_spin.setSuffix("  %"); self.quality_spin.setStyleSheet(self._input_style())
         opt_form.addRow("Calidad JPEG:", self.quality_spin)
 
         self.minw_spin = QSpinBox()
-        self.minw_spin.setRange(0, 7680)
-        self.minw_spin.setValue(0)
-        self.minw_spin.setSuffix("  px  (0 = sin límite)")
+        self.minw_spin.setRange(0,7680); self.minw_spin.setValue(0)
+        self.minw_spin.setSuffix("  px  (0=sin límite)")
         self.minw_spin.setStyleSheet(self._input_style())
         opt_form.addRow("Ancho mínimo:", self.minw_spin)
-
         lay.addWidget(grp_opt)
 
-        # ── Salida ──
         grp_out = QGroupBox("Carpeta de salida")
         grp_out.setStyleSheet(self._grp_style())
         out_lay = QHBoxLayout(grp_out)
         self.out_edit = QLineEdit()
         self.out_edit.setPlaceholderText("Selecciona carpeta base…")
         self.out_edit.setStyleSheet(self._input_style())
-        btn_browse_out = QPushButton("…")
-        btn_browse_out.setFixedWidth(34)
-        btn_browse_out.setStyleSheet(btn_style())
-        btn_browse_out.clicked.connect(self._browse_output)
-        out_lay.addWidget(self.out_edit)
-        out_lay.addWidget(btn_browse_out)
+        btn_bo = QPushButton("…"); btn_bo.setFixedWidth(34)
+        btn_bo.setStyleSheet(btn_style())
+        btn_bo.clicked.connect(self._browse_output)
+        out_lay.addWidget(self.out_edit); out_lay.addWidget(btn_bo)
         lay.addWidget(grp_out)
 
-        # ── Log ──
         self.log = QTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setFixedHeight(110)
+        self.log.setReadOnly(True); self.log.setFixedHeight(110)
         self.log.setStyleSheet(
             f"background:{DARK_BG}; color:#aaffaa; "
             f"font-family:Consolas,monospace; font-size:11px; border-radius:4px;"
         )
         lay.addWidget(self.log)
 
-        # ── Progreso ──
-        from PyQt5.QtWidgets import QProgressBar
         self.progress = QProgressBar()
         self.progress.setValue(0)
         self.progress.setStyleSheet(f"""
-            QProgressBar {{ background:{DARK_BG}; border-radius:4px;
-                           color:white; text-align:center; }}
+            QProgressBar {{ background:{DARK_BG}; border-radius:4px; color:white; text-align:center; }}
             QProgressBar::chunk {{ background:{ACCENT}; border-radius:4px; }}
         """)
         lay.addWidget(self.progress)
 
-        # ── Botones ──
         btn_row = QHBoxLayout()
         self.btn_start = QPushButton("▶  Extraer frames")
-        self.btn_start.setStyleSheet(btn_style("#1a5c2a", "#2a8a3a"))
+        self.btn_start.setStyleSheet(btn_style("#1a5c2a","#2a8a3a"))
         self.btn_start.clicked.connect(self._start_extraction)
 
         self.btn_add = QPushButton("➕  Añadir al proyecto")
-        self.btn_add.setStyleSheet(btn_style("#2a3a6a", "#4a6aaa"))
+        self.btn_add.setStyleSheet(btn_style("#2a3a6a","#4a6aaa"))
         self.btn_add.setEnabled(False)
         self.btn_add.clicked.connect(self._add_to_project)
 
@@ -1728,24 +2222,24 @@ class FrameExtractorDialog(QDialog):
         btn_row.addWidget(btn_close)
         lay.addLayout(btn_row)
 
-    def _toggle_source(self, local: bool):
+    def _toggle_source(self, local):
         self.local_widget.setVisible(local)
         self.yt_widget.setVisible(not local)
 
     def _browse_video(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Selecciona vídeo",
+            self,"Selecciona vídeo",
             filter="Vídeos (*.mp4 *.mkv *.avi *.mov *.webm *.ts);;Todos (*)"
         )
         if path:
             self.local_edit.setText(path)
 
     def _browse_output(self):
-        folder = QFileDialog.getExistingDirectory(self, "Carpeta base de salida")
+        folder = QFileDialog.getExistingDirectory(self,"Carpeta base de salida")
         if folder:
             self.out_edit.setText(folder)
 
-    def _log(self, msg: str):
+    def _log(self, msg):
         self.log.append(msg)
         self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
         QApplication.processEvents()
@@ -1753,40 +2247,30 @@ class FrameExtractorDialog(QDialog):
     def _start_extraction(self):
         if self._running:
             return
-
         out_folder = self.out_edit.text().strip()
         if not out_folder:
-            QMessageBox.warning(self, "Sin carpeta", "Selecciona una carpeta de salida.")
-            return
-
+            QMessageBox.warning(self,"Sin carpeta","Selecciona una carpeta de salida."); return
         is_local = self.rb_local.isChecked()
-
         if is_local:
-            video_path_str = self.local_edit.text().strip()
-            if not video_path_str:
-                QMessageBox.warning(self, "Sin vídeo", "Selecciona un archivo de vídeo.")
-                return
-            if not Path(video_path_str).exists():
-                QMessageBox.warning(self, "No encontrado",
-                                    f"No existe el archivo:\n{video_path_str}")
-                return
+            vps = self.local_edit.text().strip()
+            if not vps:
+                QMessageBox.warning(self,"Sin vídeo","Selecciona un archivo de vídeo."); return
+            if not Path(vps).exists():
+                QMessageBox.warning(self,"No encontrado",f"No existe:\n{vps}"); return
         else:
             if not self.yt_edit.text().strip():
-                QMessageBox.warning(self, "Sin URL", "Introduce una URL de YouTube.")
-                return
+                QMessageBox.warning(self,"Sin URL","Introduce una URL de YouTube."); return
 
         self._running = True
         self.btn_start.setEnabled(False)
         self.btn_add.setEnabled(False)
         self.progress.setValue(0)
         self.log.clear()
-
         base_out = Path(out_folder)
-
         try:
             if is_local:
-                video_path = Path(self.local_edit.text().strip())
-                self._extract(video_path, video_path.stem, base_out)
+                vp = Path(self.local_edit.text().strip())
+                self._extract(vp, vp.stem, base_out)
             else:
                 self._download_and_extract(self.yt_edit.text().strip(), base_out)
         except Exception as e:
@@ -1795,141 +2279,104 @@ class FrameExtractorDialog(QDialog):
             self._running = False
             self.btn_start.setEnabled(True)
 
-    def _limpiar_nombre(self, nombre: str) -> str:
+    def _limpiar_nombre(self, n):
         import re
-        nombre = re.sub(r'[\\/*?:"<>|]', "", nombre)
-        nombre = nombre.replace(" ", "_")
-        return nombre[:80]
+        return re.sub(r'[\\/*?:"<>|]',"",n).replace(" ","_")[:80]
 
-    def _crear_carpeta(self, base: Path, nombre: str) -> Path:
-        nombre  = self._limpiar_nombre(nombre)
+    def _crear_carpeta(self, base, nombre):
+        nombre = self._limpiar_nombre(nombre)
         carpeta = base / nombre
         if carpeta.exists():
             i = 2
-            while (base / f"{nombre}_{i}").exists():
+            while (base/f"{nombre}_{i}").exists():
                 i += 1
-            carpeta = base / f"{nombre}_{i}"
+            carpeta = base/f"{nombre}_{i}"
         carpeta.mkdir(parents=True, exist_ok=True)
         return carpeta
 
-    def _download_and_extract(self, url: str, base_out: Path):
+    def _download_and_extract(self, url, base_out):
         try:
             import yt_dlp
         except ImportError:
-            self._log("❌  yt-dlp no instalado. Ejecuta:  pip install yt-dlp")
-            return
+            self._log("❌  yt-dlp no instalado. Ejecuta:  pip install yt-dlp"); return
 
-        temp_dir = base_out / "_temp_yt"
+        temp_dir = base_out/"_temp_yt"
         temp_dir.mkdir(parents=True, exist_ok=True)
         video_path = None
-
         try:
             self._log("⬇️  Conectando con YouTube…")
             QApplication.processEvents()
-
-            opciones = {
-                "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "outtmpl": str(temp_dir / "%(title)s.%(ext)s"),
-                "quiet": True,
-                "no_warnings": True,
+            opts = {
+                "format":"bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "outtmpl":str(temp_dir/"%(title)s.%(ext)s"),
+                "quiet":True,"no_warnings":True,
             }
-
-            with yt_dlp.YoutubeDL(opciones) as ydl:
-                info = ydl.extract_info(url, download=True)
-                titulo = info.get("title", "video_youtube")
-
-            candidates = (list(temp_dir.glob("*.mp4")) +
-                          list(temp_dir.glob("*.mkv")) +
-                          list(temp_dir.glob("*.webm")))
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.extract_info(url, download=True)
+            candidates = list(temp_dir.glob("*.mp4"))+list(temp_dir.glob("*.mkv"))+list(temp_dir.glob("*.webm"))
             if not candidates:
-                self._log("❌  No se encontró el archivo descargado.")
-                return
-
+                self._log("❌  No se encontró el archivo descargado."); return
             video_path = candidates[0]
             self._log(f"✅  Descargado: {video_path.stem}")
             self._extract(video_path, video_path.stem, base_out)
-
         finally:
             if video_path and video_path.exists():
                 video_path.unlink()
             if temp_dir.exists():
-                try:
-                    temp_dir.rmdir()
-                except OSError:
-                    pass
+                try: temp_dir.rmdir()
+                except OSError: pass
 
-    def _extract(self, video_path: Path, nombre: str, base_out: Path):
-        carpeta  = self._crear_carpeta(base_out, nombre)
-        fps_obj  = self.fps_spin.value()
-        fmt      = self.fmt_combo.currentText()
-        quality  = self.quality_spin.value()
-        min_w    = self.minw_spin.value()
-        params   = [cv2.IMWRITE_JPEG_QUALITY, quality] if fmt == "jpg" else []
+    def _extract(self, video_path, nombre, base_out):
+        carpeta = self._crear_carpeta(base_out, nombre)
+        fps_obj = self.fps_spin.value()
+        fmt     = self.fmt_combo.currentText()
+        quality = self.quality_spin.value()
+        min_w   = self.minw_spin.value()
+        params  = [cv2.IMWRITE_JPEG_QUALITY, quality] if fmt=="jpg" else []
 
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
-            self._log(f"❌  No se puede abrir: {video_path}")
-            return
+            self._log(f"❌  No se puede abrir: {video_path}"); return
 
-        fps_video    = cap.get(cv2.CAP_PROP_FPS) or 25
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duracion_s   = total_frames / fps_video
-        intervalo    = max(1, round(fps_video / fps_obj))
-        ancho        = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        alto         = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps_v  = cap.get(cv2.CAP_PROP_FPS) or 25
+        total  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        dur    = total/fps_v
+        intv   = max(1, round(fps_v/fps_obj))
+        ancho  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        alto   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         self._log(f"📹  {video_path.name}")
-        self._log(
-            f"    Resolución: {ancho}×{alto}  |  {fps_video:.1f} fps  |  {duracion_s/60:.1f} min"
-        )
-        self._log(
-            f"    Extrayendo: {fps_obj} frame/s  →  "
-            f"~{int(duracion_s * fps_obj)} frames estimados"
-        )
-        self._log(f"    Destino:    {carpeta}")
+        self._log(f"    {ancho}×{alto}  |  {fps_v:.1f}fps  |  {dur/60:.1f}min  →  ~{int(dur*fps_obj)} frames")
+        self._log(f"    Destino: {carpeta}")
 
-        if min_w and ancho < min_w:
-            self._log(
-                f"⚠️  Vídeo más estrecho que el mínimo ({ancho} < {min_w}). "
-                f"Se extrae igualmente."
-            )
-
-        guardados = 0
-        frame_idx = 0
-        self.progress.setMaximum(max(total_frames, 1))
+        guardados = frame_idx = 0
+        self.progress.setMaximum(max(total, 1))
 
         while True:
             ret, frame = cap.read()
-            if not ret:
-                break
-            if frame_idx % intervalo == 0:
-                nombre_frame = f"frame_{frame_idx:07d}.{fmt}"
-                cv2.imwrite(str(carpeta / nombre_frame), frame, params)
+            if not ret: break
+            if frame_idx % intv == 0:
+                cv2.imwrite(str(carpeta/f"frame_{frame_idx:07d}.{fmt}"), frame, params)
                 guardados += 1
                 if guardados % 50 == 0:
                     self.progress.setValue(frame_idx)
-                    self._log(
-                        f"    [{frame_idx/max(total_frames,1)*100:5.1f}%]  "
-                        f"{guardados} frames guardados…"
-                    )
+                    self._log(f"    [{frame_idx/max(total,1)*100:5.1f}%]  {guardados} frames…")
             frame_idx += 1
 
         cap.release()
-        self.progress.setValue(total_frames)
+        self.progress.setValue(total)
         self._log(f"\n✅  Completado: {guardados} frames en '{carpeta.name}/'")
         self._last_output_folder = carpeta
-
         if self.project is not None:
             self.btn_add.setEnabled(True)
 
     def _add_to_project(self):
         if not self._last_output_folder or not self.project:
             return
-        folder    = self._last_output_folder
         SUPPORTED = {".jpg",".jpeg",".png",".bmp",".tiff",".tif",".webp"}
         existing  = {r.path for r in self.project.images}
         added = 0
-        for p in sorted(folder.iterdir()):
+        for p in sorted(self._last_output_folder.iterdir()):
             if p.suffix.lower() in SUPPORTED and str(p) not in existing:
                 self.project.images.append(ImageRecord(path=str(p)))
                 added += 1
@@ -1938,11 +2385,8 @@ class FrameExtractorDialog(QDialog):
             self.parent()._refresh_all()
             if added > 0 and len(self.project.images) == added:
                 self.parent()._go_to(0)
-        QMessageBox.information(
-            self, "Añadido",
-            f"{added} imágenes añadidas al proyecto.\n"
-            "Puedes cerrar esta ventana y empezar a anotar."
-        )
+        QMessageBox.information(self, "Añadido",
+            f"{added} imágenes añadidas.\nPuedes cerrar esta ventana y empezar a anotar.")
 
     def _grp_style(self):
         return (
@@ -1967,7 +2411,6 @@ def main():
     app.setApplicationName("YOLO Annotator Pro")
     app.setStyle("Fusion")
 
-    # Configurar icono global de la aplicación
     icon_path = resource_path("logoapp.png")
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
