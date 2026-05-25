@@ -22,7 +22,7 @@ Gestiona datasets completos: anota, organiza splits y exporta listos para entren
 
 ## ¿Qué es?
 
-YOLO Annotator Pro es una aplicación de escritorio para crear y gestionar datasets de detección de objetos en formato YOLO. Cubre todo el flujo de trabajo: desde la importación de imágenes (o extracción de frames de vídeo) hasta la exportación del dataset estructurado con su `data.yaml`, listo para pasarle directamente a YOLOv8, YOLOv5 o cualquier variante compatible.
+YOLO Annotator Pro es una aplicación de escritorio para crear y gestionar datasets de detección de objetos en formato YOLO. Cubre todo el flujo de trabajo: desde la importación de imágenes (o extracción de frames de vídeo y streams de YouTube) hasta la exportación del dataset estructurado con su `data.yaml`, listo para pasarle directamente a YOLOv8, YOLOv5 o cualquier variante compatible.
 
 ---
 
@@ -60,9 +60,18 @@ YOLO Annotator Pro es una aplicación de escritorio para crear y gestionar datas
 
 ### Extractor de frames integrado
 - Extrae frames de vídeos locales (MP4, MKV, AVI, MOV, WebM…) a la cadencia elegida
-- Soporte para **YouTube** vía `yt-dlp` (instalación opcional)
 - Control de FPS de extracción, formato (JPG/PNG), calidad JPEG y ancho mínimo
+- **Rango de tiempo configurable** en formato `mm:ss`: extrae solo el segmento que te interesa, no el vídeo entero
 - Añade automáticamente los frames extraídos al proyecto abierto
+
+### Descarga y extracción desde YouTube
+- Descarga vídeos de YouTube vía `yt-dlp` y extrae los frames **directamente, sin guardar el vídeo completo en disco**
+- **Selección de resolución:** Mejor disponible, 1080p, 720p, 480p, 360p, 240p, 144p
+- **Con ffmpeg:** accede a streams DASH separados (vídeo + audio) para obtener 1080p/720p real. Los frames se extraen mediante pipe de ffmpeg sin pasar por disco
+- **Sin ffmpeg:** descarga el mejor stream progresivo disponible (hasta ~480p)
+- **Rango de tiempo:** extrae solo entre `mm:ss` de inicio y `mm:ss` de fin; con ffmpeg el salto al punto de inicio es instantáneo (`-ss` nativo)
+- Detección automática de ffmpeg: busca en el PATH del sistema y en rutas típicas de Windows (`C:\ffmpeg\bin`, `C:\Program Files\ffmpeg\bin`…) y actualiza el PATH del proceso si lo encuentra
+- El progreso de descarga y extracción se muestra en el log de la propia ventana, sin necesidad de tener la consola abierta
 
 ### Proyectos persistentes
 - Guarda y carga proyectos en formato `.yannotator` (JSON)
@@ -80,6 +89,11 @@ python yolo_annotator.py
 Para soporte de YouTube (opcional):
 ```bash
 pip install yt-dlp
+```
+
+Para descargas en 1080p/720p desde YouTube es necesario tener **ffmpeg** instalado y accesible. En Windows:
+```bash
+winget install Gyan.FFmpeg
 ```
 
 **Requisitos:** Python 3.10+
@@ -122,7 +136,8 @@ El script instala las dependencias, compila con PyInstaller y, si detecta Inno S
 ```
 1. Archivo → Nuevo proyecto
 2. Archivo → Añadir carpeta de imágenes
-           (o Ctrl+E para extraer frames de un vídeo)
+           (o Ctrl+E → archivo local para extraer frames de un vídeo)
+           (o Ctrl+E → URL de YouTube para extraer frames sin descargar el vídeo)
 3. Panel izquierdo → Añadir clases
 4. Seleccionar clase + dibujar bounding boxes
 5. Asignar cada imagen a TRAIN / VALID / TEST
@@ -151,6 +166,7 @@ Todos los valores entre 0 y 1, relativos al tamaño de la imagen.
 | `PyQt5` | Interfaz gráfica |
 | `opencv-python` | Lectura de imágenes y vídeo |
 | `yt-dlp` *(opcional)* | Descarga de vídeos de YouTube |
+| `ffmpeg` *(opcional, binario del sistema)* | Streams 1080p/720p y pipe de frames desde YouTube |
 | `pyinstaller` *(build)* | Generación del ejecutable |
 
 ---
