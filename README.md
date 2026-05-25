@@ -162,4 +162,4 @@ Los pull requests son bienvenidos. Para cambios grandes, abre primero un issue p
 
 ## Licencia
 
-[MIT](LICENSE)
+[GPL](LICENSE) [COMMERCIAL](LICENSE)
